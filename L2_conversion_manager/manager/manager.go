@@ -850,7 +850,10 @@ func (sm *SessionManager) WakeTask(ctx context.Context, taskID string, req model
 
 	sm.injectTaskContext(cwd, taskID)
 
-	model := sm.cfg.DefaultModel
+	model := task.Model
+	if model == "" {
+		model = sm.cfg.DefaultModel
+	}
 
 	novelName := req.NovelName
 	if novelName == "" {

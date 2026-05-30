@@ -79,7 +79,9 @@ func BookGetInfo(sessionMgrURL string) gin.HandlerFunc {
 			return
 		}
 
-		volumes := buildVolumeTree(sessionsResp.Sessions)
+		validSessions := filterValidSessions(sessionsResp.Sessions)
+
+		volumes := buildVolumeTree(validSessions)
 
 		hasUnclassified := false
 		for i := range volumes {
@@ -130,6 +132,20 @@ type bookChapterRaw struct {
 	ChapterNumber int    `json:"chapter_number"`
 	CreatedAt     string `json:"created_at"`
 	ArchivedAt    string `json:"archived_at,omitempty"`
+}
+
+func filterValidSessions(sessions []bookChapterRaw) []bookChapterRaw {
+	var result []bookChapterRaw
+	for _, s := range sessions {
+		if s.DraftVersion <= 0 {
+			continue
+		}
+		if s.Status == "CREATED" || s.Status == "GENERATING" {
+			continue
+		}
+		result = append(result, s)
+	}
+	return result
 }
 
 func buildVolumeTree(sessions []bookChapterRaw) []bookVolume {
