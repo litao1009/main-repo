@@ -15,11 +15,13 @@
 | L1_AI_Releaser | https://github.com/mengpingzeng/L1_AI_Releaser |
 | L1_opencode | https://github.com/mengpingzeng/L1_opencode |
 | L1_skills_register | https://github.com/mengpingzeng/L1_skills_register |
+| L1_novel_skill | (本地仓库) |
 | L2_AI_Interval | https://github.com/mengpingzeng/L2_AI_Interval |
 | L2_AI_Workflow_Engine | https://github.com/mengpingzeng/L2_AI_Workflow_Engine |
 | L2_conversion_manager | https://github.com/mengpingzeng/L2_conversion_manager |
 | L3_AI_BFF | https://github.com/mengpingzeng/L3_AI_BFF |
 | migrations | https://github.com/mengpingzeng/migrations |
+| pkg | (本地仓库，共享 logging 库) |
 
 ## 独立更新某个子模块
 1. 进入该子模块的原始目录（例如 `/home/claw_studios/code/service-a`）
