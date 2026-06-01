@@ -52,10 +52,13 @@ func (rp *RealPublisher) Publish(ctx context.Context, req PublishRequest) (*Publ
 		platforms[a.Platform]++
 	}
 
-	logInfo("publish started",
+	logInfo("publish REQUEST received",
 		"task_id", req.TaskID,
+		"session_id", req.SessionID,
 		"accounts", len(req.Accounts),
 		"platforms", fmt.Sprintf("%v", platforms),
+		"chapter", req.Products,
+		"skill_id", req.SkillID,
 	)
 
 	if err := rp.validateRequest(req); err != nil {

@@ -2,9 +2,7 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
-	"math/big"
 	"sort"
 	"strings"
 	"sync"
@@ -190,11 +188,66 @@ func (s *FakeSkillStore) CountByOwner(ctx context.Context, ownerUID string) (int
 
 var ErrNoAvailableSkill = fmt.Errorf("no available skill for the given criteria")
 
-func (s *FakeSkillStore) AllocSkill(ctx context.Context, platform, theme, style string) (*models.AllocSkillResponse, error) {
+func (s *FakeSkillStore) AllocSkill(ctx context.Context, platform, theme, style string, excludeIDs []string) ([]*models.AllocSkillResponse, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	excludeSet := make(map[string]bool, len(excludeIDs))
+	for _, id := range excludeIDs {
+		excludeSet[id] = true
+	}
+
+	var result []*models.AllocSkillResponse
+	for _, entry := range s.skills {
+		pkg := entry.Pkg
+		if pkg.Status != "active" {
+			continue
+		}
+		if excludeSet[pkg.ID] {
+			continue
+		}
+		if !matchPlatform(pkg.Targets, platform) {
+			continue
+		}
+		if theme != "" {
+			themeLower := strings.ToLower(theme)
+			if !strings.Contains(strings.ToLower(pkg.Name), themeLower) &&
+				!strings.Contains(strings.ToLower(pkg.Description), themeLower) {
+				continue
+			}
+		}
+		if style != "" {
+			styleLower := strings.ToLower(style)
+			if !strings.Contains(strings.ToLower(pkg.Category), styleLower) &&
+				!strings.Contains(strings.ToLower(pkg.Name), styleLower) {
+				continue
+			}
+		}
+		result = append(result, &models.AllocSkillResponse{
+			SkillID:     pkg.ID,
+			Version:     pkg.Version,
+			Name:        pkg.Name,
+			Description: pkg.Description,
+			Category:    pkg.Category,
+			CoverImage:  pkg.CoverImage,
+		})
+	}
+
+	return result, nil
+}
+
+func (s *FakeSkillStore) ReleaseSkill(ctx context.Context, skillID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	delete(s.allocated, skillID)
+	return nil
+}
 
-	var candidates []*skillEntry
+func (s *FakeSkillStore) AvailableCount(ctx context.Context, platform, theme, style string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	count := 0
 	for _, entry := range s.skills {
 		pkg := entry.Pkg
 		if pkg.Status != "active" {
@@ -220,29 +273,9 @@ func (s *FakeSkillStore) AllocSkill(ctx context.Context, platform, theme, style 
 				continue
 			}
 		}
-		candidates = append(candidates, entry)
+		count++
 	}
-
-	if len(candidates) == 0 {
-		return nil, ErrNoAvailableSkill
-	}
-
-	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(candidates))))
-	if err != nil {
-		return nil, fmt.Errorf("random selection failed: %w", err)
-	}
-
-	selected := candidates[n.Int64()]
-	s.allocated[selected.Pkg.ID] = true
-
-	return &models.AllocSkillResponse{
-		SkillID:          selected.Pkg.ID,
-		Version:          selected.Pkg.Version,
-		Name:             selected.Pkg.Name,
-		Description:      selected.Pkg.Description,
-		Category:         selected.Pkg.Category,
-		ModelRecommended: selected.Pkg.ModelRecommended,
-	}, nil
+	return count, nil
 }
 
 func matchPlatform(targets []string, platform string) bool {

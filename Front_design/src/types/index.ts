@@ -62,11 +62,15 @@ export interface UnbindResponse {
 
 // ===== 任务 (Session Manager via BFF) =====
 export interface TaskCreateInput {
-  topic: string
   platform: string
+  account_ids: string[]
   skill_id: string
   model: string
-  account_ids?: string[]
+  is_auto_publish: boolean
+  name?: string
+  description?: string
+  category?: string
+  cover_image?: string
 }
 
 export interface TaskCreateResponse {
@@ -123,6 +127,39 @@ export interface Skill {
   status: string
 }
 
+// ===== Skill 分配 =====
+
+export interface AllocSkillInput {
+  platform: string
+  theme?: string
+}
+
+export interface AllocSkillItem {
+  skill_id: string
+  version: string
+  name: string
+  description: string
+  category: string
+  cover_image: string
+}
+
+export interface AllocSkillListResponse {
+  skills: AllocSkillItem[]
+  total: number
+}
+
+export interface AllocSkillData {
+  skill_id: string
+  name: string
+  description: string
+  cover_url?: string
+}
+
+export interface AllocSkillResponse {
+  code: number
+  data: AllocSkillData
+}
+
 // ===== 会话 (Session Manager) =====
 export interface SessionCreateInput {
   task_id: string
@@ -161,6 +198,13 @@ export interface Draft {
 
 export interface SendMessageResponse {
   accepted: boolean
+}
+
+export interface TaskMessageInput {
+  text: string
+  target_session_id?: string
+  draft_version?: number
+  mode?: "chat" | "edit"
 }
 
 export interface TaskMessagesResponse {
@@ -234,6 +278,7 @@ export type WSEventType =
   | "session_interrupted"
   | "done"
   | "error"
+  | "heartbeat"
 
 export interface WSEvent {
   type: WSEventType
@@ -300,4 +345,72 @@ export interface UpdateUserResponse {
   username: string
   role: string
   updatedAt: string
+}
+
+// ===== 书卷章 API =====
+
+export interface BookChapter {
+  chapter_number: number
+  session_id: string
+  title: string
+  status: string
+  draft_version: number
+  created_at: string
+  archived_at: string
+}
+
+export interface BookVolume {
+  volume_name: string
+  chapter_count: number
+  chapters: BookChapter[]
+}
+
+export interface BookInfoResponse {
+  task_id: string
+  novel_name: string
+  total_volumes: number
+  total_chapters: number
+  volumes: BookVolume[]
+}
+
+// ===== 任务发布记录 =====
+
+export interface PublishRecord {
+  postId: string
+  accountId: string
+  platform: string
+  skillId: string
+  sessionId: string
+  novelName: string
+  loginName?: string
+  publishedAt: string
+  views: number
+  likes: number
+  comments: number
+  shares: number
+}
+
+export interface TaskPublishListSummary {
+  totalPosts: number
+  totalViews: number
+  totalLikes: number
+  totalComments: number
+  totalShares: number
+}
+
+export interface TaskPublishListResponse {
+  items: PublishRecord[]
+  summary: TaskPublishListSummary
+  total: number
+}
+
+export interface BookContentResponse {
+  task_id: string
+  volume_name: string
+  chapter_number: number
+  session_id: string
+  chapter_title: string
+  content: string
+  draft_version: number
+  created_at: string
 }

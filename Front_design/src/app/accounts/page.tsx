@@ -10,10 +10,9 @@ import { fetchAccounts, bindAccount, unbindAccount, checkCookieHealth, fetchAcco
 import {
   getCachedEntry,
   setCachedEntry,
-  isCacheStale,
   invalidateCache,
   getBulkCached,
-  heuristicStatus,
+  shouldUseHealthCache,
   type CookieHealthStatus,
 } from "@/lib/cookie-health-cache"
 import type { AccountSummary } from "@/types"
@@ -68,75 +67,86 @@ export default function AccountsPage() {
   const captureContextRef = useRef<'bind' | 'relogin'>('bind')
   const captureTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const loadAccounts = useCallback(async () => {
-    setLoading(true)
-    setError("")
-    try {
-      const accs = await fetchAccounts()
-      setAccounts(accs)
-      initCookieStatus(accs)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "加载失败")
-    } finally {
-      setLoading(false)
-    }
+  const runHealthChecks = useCallback(async (accs: AccountSummary[]) => {
+    const results = await Promise.allSettled(accs.map(acc => checkCookieHealth(acc.account_id)))
+    setCookieStatusMap(prev => {
+      const next = { ...prev }
+      results.forEach((result, i) => {
+        const acc = accs[i]
+        const id = acc.account_id
+        const status: CookieHealthStatus =
+          result.status === 'fulfilled' ? (result.value.valid ? 'valid' : 'expired') : 'unknown'
+        next[id] = status
+        setCachedEntry(id, {
+          status,
+          checkedAt: Date.now(),
+          source: 'backend',
+          credentialUpdatedAt: acc.updated_at,
+        })
+      })
+      return next
+    })
   }, [])
 
-  const initCookieStatus = useCallback((accs: AccountSummary[]) => {
+  const initCookieStatus = useCallback((accs: AccountSummary[], forceRecheck = false) => {
     if (accs.length === 0) return
     const cached = getBulkCached(accs.map(a => a.account_id))
     const initial: Record<string, DisplayStatus> = {}
     const needsCheck: AccountSummary[] = []
     for (const acc of accs) {
       const entry = cached[acc.account_id]
-      if (entry && !isCacheStale(entry)) {
-        initial[acc.account_id] = entry.status
-      } else if (entry && isCacheStale(entry)) {
-        initial[acc.account_id] = entry.status
-        needsCheck.push(acc)
+      if (!forceRecheck && shouldUseHealthCache(entry, acc.updated_at)) {
+        initial[acc.account_id] = entry!.status
       } else {
-        initial[acc.account_id] = heuristicStatus(acc.updated_at)
+        initial[acc.account_id] = 'checking'
         needsCheck.push(acc)
       }
     }
     setCookieStatusMap(initial)
     if (needsCheck.length > 0) runHealthChecks(needsCheck)
-  }, [])
+  }, [runHealthChecks])
 
-  const runHealthChecks = useCallback(async (accs: AccountSummary[], markChecking = false) => {
-    if (markChecking) {
-      setCookieStatusMap(prev => {
-        const next = { ...prev }
-        for (const acc of accs) next[acc.account_id] = 'checking'
-        return next
-      })
+  const loadAccounts = useCallback(async (options?: { forceRecheck?: boolean }) => {
+    setLoading(true)
+    setError("")
+    try {
+      const accs = await fetchAccounts()
+      setAccounts(accs)
+      initCookieStatus(accs, options?.forceRecheck)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载失败")
+    } finally {
+      setLoading(false)
     }
-    const results = await Promise.allSettled(accs.map(acc => checkCookieHealth(acc.account_id)))
-    setCookieStatusMap(prev => {
-      const next = { ...prev }
-      results.forEach((result, i) => {
-        const id = accs[i].account_id
-        const status: CookieHealthStatus =
-          result.status === 'fulfilled' ? (result.value.valid ? 'valid' : 'expired') : 'unknown'
-        next[id] = status
-        setCachedEntry(id, { status, checkedAt: Date.now(), source: 'backend' })
-      })
-      return next
-    })
-  }, [])
+  }, [initCookieStatus])
+
+  const refreshAccounts = useCallback(() => {
+    loadAccounts({ forceRecheck: true })
+  }, [loadAccounts])
 
   const recheckOne = useCallback(async (accountId: string) => {
+    const acc = accounts.find(a => a.account_id === accountId)
     setCookieStatusMap(prev => ({ ...prev, [accountId]: 'checking' }))
     try {
       const res = await checkCookieHealth(accountId)
       const status: CookieHealthStatus = res.valid ? 'valid' : 'expired'
       setCookieStatusMap(prev => ({ ...prev, [accountId]: status }))
-      setCachedEntry(accountId, { status, checkedAt: Date.now(), source: 'backend' })
+      setCachedEntry(accountId, {
+        status,
+        checkedAt: Date.now(),
+        source: 'backend',
+        credentialUpdatedAt: acc?.updated_at,
+      })
     } catch {
       setCookieStatusMap(prev => ({ ...prev, [accountId]: 'unknown' }))
-      setCachedEntry(accountId, { status: 'unknown', checkedAt: Date.now(), source: 'backend' })
+      setCachedEntry(accountId, {
+        status: 'unknown',
+        checkedAt: Date.now(),
+        source: 'backend',
+        credentialUpdatedAt: acc?.updated_at,
+      })
     }
-  }, [])
+  }, [accounts])
 
   useEffect(() => { loadAccounts() }, [loadAccounts])
 
@@ -340,13 +350,24 @@ export default function AccountsPage() {
           <h1 className="text-3xl font-bold text-slate-900 tracking-tight">发布账号配置</h1>
           <p className="text-slate-500 mt-1 text-sm">管理各平台用于分发的账号，通过 KMS 安全保管</p>
         </div>
-        <button
-          onClick={() => setShowBindModal(true)}
-          className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 transition-colors shadow-sm flex items-center gap-1.5"
-        >
-          <Plus size={15} />
-          绑定新账号
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={refreshAccounts}
+            disabled={loading}
+            className="px-4 py-2 bg-white text-slate-700 text-sm font-medium rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+          >
+            <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
+            刷新
+          </button>
+          <button
+            onClick={() => setShowBindModal(true)}
+            className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 transition-colors shadow-sm flex items-center gap-1.5"
+          >
+            <Plus size={15} />
+            绑定新账号
+          </button>
+        </div>
       </div>
 
       {/* ── 平台过滤 Tab ── */}
@@ -379,7 +400,7 @@ export default function AccountsPage() {
         <div className="flex flex-col items-center justify-center py-24">
           <AlertCircle className="w-12 h-12 mb-4 text-red-300" />
           <p className="text-sm text-slate-500 mb-3">{error}</p>
-          <button onClick={loadAccounts} className="text-sm text-orange-600 hover:underline">重试</button>
+          <button onClick={() => loadAccounts()} className="text-sm text-orange-600 hover:underline">重试</button>
         </div>
       ) : accounts.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-24">
@@ -411,7 +432,7 @@ export default function AccountsPage() {
                 </h3>
 
                 {/* 卡片网格 */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
                   {accs.map(acc => {
                     const status = cookieStatusMap[acc.account_id]
                     const isExpired = status === 'expired'

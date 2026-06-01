@@ -57,6 +57,37 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 	})
+	mux.HandleFunc("/api/dashboard/batch", func(w http.ResponseWriter, r *http.Request) {
+		logger := logging.FromContext(r.Context())
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"errorCode":"METHOD_NOT_ALLOWED"}`, 405)
+			return
+		}
+		var req c2_dashboard.BatchStatsRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if logger != nil {
+				logger.Error(logging.ErrInvalidParam, "decode batch request failed: %v", err)
+			}
+			http.Error(w, `{"errorCode":"BAD_REQUEST"}`, 400)
+			return
+		}
+		resp, err := querier.BatchQuery(r.Context(), req.TaskIDs)
+		if err != nil {
+			if logger != nil {
+				logger.Error(logging.ErrDatabaseError, "batch query failed: %v", err)
+			}
+			code, msg := c2_dashboard.ClassifyError(err)
+			w.WriteHeader(code)
+			json.NewEncoder(w).Encode(map[string]string{
+				"errorCode":    msg,
+				"errorMessage": err.Error(),
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		logger := logging.FromContext(r.Context())
 		if err := querier.Health(r.Context()); err != nil {

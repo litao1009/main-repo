@@ -3,9 +3,12 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ============================================================
@@ -13,9 +16,10 @@ import (
 // ============================================================
 
 type Provider struct {
-	APIKey  string   `json:"api_key"`
-	BaseURL string   `json:"base_url"`
-	Models  []string `json:"-"`
+	APIKey    string   `json:"api_key"`
+	BaseURL   string   `json:"base_url"`
+	MaxTokens int      `json:"max_tokens,omitempty"`
+	Models    []string `json:"-"`
 }
 
 type ModelInfo struct {
@@ -51,20 +55,26 @@ type KeysEntry struct {
 
 type builtinDef struct {
 	Key       string
+	ConfigKey string
 	BaseURL   string
 	EnvVars   []string
+	MaxTokens int
 }
 
 var builtinProviders = []builtinDef{
 	{
-		Key:     "deepseek",
-		BaseURL: "https://api.deepseek.com/v1",
-		EnvVars: []string{"DEEPSEEK_API_KEY", "TEAM_DEEPSEEK_API_KEY"},
+		Key:       "deepseek",
+		ConfigKey: "team-deepseek",
+		BaseURL:   "https://api.deepseek.com/v1",
+		EnvVars:   []string{"DEEPSEEK_API_KEY", "TEAM_DEEPSEEK_API_KEY"},
+		MaxTokens: 8192,
 	},
 	{
-		Key:     "hy3",
-		BaseURL: "https://api.hy3-preview.tencent.com/v1",
-		EnvVars: []string{"HY3_API_KEY", "TEAM_HY3_API_KEY"},
+		Key:       "hy3",
+		ConfigKey: "team-hy3",
+		BaseURL:   "https://api.hy3-preview.tencent.com/v1",
+		EnvVars:   []string{"HY3_API_KEY", "TEAM_HY3_API_KEY"},
+		MaxTokens: 4096,
 	},
 }
 
@@ -101,10 +111,11 @@ func NewManager(keysConfigPath string) (*Manager, error) {
 			ring := NewKeyRing(bp.Key, keys, m.stateFilePath(keysConfigPath))
 			m.rings[bp.Key] = ring
 
-			m.config.Provider[bp.Key] = Provider{
-				APIKey:  ring.Next(),
-				BaseURL: bp.BaseURL,
-				Models:  m.discoverModels(bp.Key),
+			m.config.Provider[bp.ConfigKey] = Provider{
+				APIKey:    ring.Next(),
+				BaseURL:   bp.BaseURL,
+				MaxTokens: bp.MaxTokens,
+				Models:    m.discoverModels(bp.Key),
 			}
 		}
 	}
@@ -214,6 +225,10 @@ func (m *Manager) buildModelCatalog() {
 		}
 		if _, ok := m.config.Provider[bm.Provider]; ok {
 			m.models = append(m.models, bm)
+			continue
+		}
+		if _, ok := m.config.Provider["team-"+bm.Provider]; ok {
+			m.models = append(m.models, bm)
 		}
 	}
 }
@@ -279,10 +294,14 @@ func (m *Manager) EnrichConfig(configPath string) error {
 }
 
 func (m *Manager) rotateKeys() {
-	for key, ring := range m.rings {
-		if prov, ok := m.config.Provider[key]; ok {
+	for _, bp := range builtinProviders {
+		ring, ok := m.rings[bp.Key]
+		if !ok {
+			continue
+		}
+		if prov, ok := m.config.Provider[bp.ConfigKey]; ok {
 			prov.APIKey = ring.Next()
-			m.config.Provider[key] = prov
+			m.config.Provider[bp.ConfigKey] = prov
 		}
 	}
 }
@@ -293,6 +312,54 @@ func OpenCodeConfigPath() string {
 		return ""
 	}
 	return filepath.Join(home, ".config", "opencode", "opencode.json")
+}
+
+func (m *Manager) SelfCheck() {
+	log.Println("========== L1_AI_Provider Self-Check ==========")
+	for provKey, prov := range m.config.Provider {
+		if prov.APIKey == "" {
+			log.Printf("[SKIP] Provider %s: no API key configured", provKey)
+			continue
+		}
+		keyPrefix := prov.APIKey
+		if len(keyPrefix) > 16 {
+			keyPrefix = keyPrefix[:16]
+		}
+		log.Printf("[CHECK] Provider %s: testing key %s... | base_url=%s", provKey, keyPrefix+"...", prov.BaseURL)
+
+		baseURL := prov.BaseURL
+		if baseURL == "" {
+			baseURL = "https://api.deepseek.com/v1"
+		}
+
+		req, err := http.NewRequest("GET", baseURL+"/models", nil)
+		if err != nil {
+			log.Printf("[FAIL] Provider %s: failed to create request: %v", provKey, err)
+			continue
+		}
+		req.Header.Set("Authorization", "Bearer "+prov.APIKey)
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		start := time.Now()
+		resp, err := client.Do(req)
+		duration := time.Since(start)
+
+		if err != nil {
+			log.Printf("[FAIL] Provider %s: API call failed after %s: %v", provKey, duration.Round(time.Millisecond), err)
+			continue
+		}
+		resp.Body.Close()
+
+		status := resp.StatusCode
+		if status == 200 {
+			log.Printf("[OK] Provider %s: key valid (HTTP %d, latency %s)", provKey, status, duration.Round(time.Millisecond))
+		} else if status == 401 || status == 403 {
+			log.Printf("[FAIL] Provider %s: INVALID KEY (HTTP %d) - check config/keys.json", provKey, status)
+		} else {
+			log.Printf("[WARN] Provider %s: unexpected HTTP %d (latency %s)", provKey, status, duration.Round(time.Millisecond))
+		}
+	}
+	log.Println("========== Self-Check Complete ==========")
 }
 
 func (m *Manager) Validate() []string {

@@ -53,7 +53,7 @@ func main() {
 		}
 	}
 
-	handler := api.NewHandler(reg, *internalAuth)
+	handler := api.NewHandler(reg, *internalAuth, absSkillDir)
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)

@@ -5,21 +5,20 @@ import (
 	"fmt"
 
 	"L1_skills_register/models"
-	"L1_skills_register/store"
 )
 
-func (r *registryImpl) AllocSkill(ctx context.Context, platform, theme, style string) (*models.AllocSkillResponse, error) {
+func (r *registryImpl) AllocSkill(ctx context.Context, platform, theme, style string, excludeIDs []string) ([]*models.AllocSkillResponse, error) {
 	if platform == "" {
 		return nil, fmt.Errorf("platform is required")
 	}
 
-	result, err := r.store.AllocSkill(ctx, platform, theme, style)
-	if err != nil {
-		if err == store.ErrNoAvailableSkill {
-			return nil, err
-		}
-		return nil, fmt.Errorf("alloc skill failed: %w", err)
-	}
+	return r.store.AllocSkill(ctx, platform, theme, style, excludeIDs)
+}
 
-	return result, nil
+func (r *registryImpl) ReleaseSkill(ctx context.Context, skillID string) error {
+	return r.store.ReleaseSkill(ctx, skillID)
+}
+
+func (r *registryImpl) AvailableCount(ctx context.Context, platform, theme, style string) (int, error) {
+	return r.store.AvailableCount(ctx, platform, theme, style)
 }

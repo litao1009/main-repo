@@ -1,0 +1,36 @@
+---
+description: 终端命令可自动执行，但 git push 及破坏性操作必须先征得用户确认
+alwaysApply: true
+---
+
+# 终端与 Git 安全规则
+
+## 可自动执行的终端操作
+
+以下操作可直接执行，无需额外询问：
+
+- 读取类：`git status`、`git diff`、`git log`、`ls`、`cat`、`curl`（只读探测）
+- 开发类：`npm install`、`npm run dev`、`npm run build`、`npm run lint`、`npx`（非破坏性）
+- 测试类：运行测试、类型检查
+- 其他不修改远程仓库、不删除数据的命令
+
+## 必须先询问用户
+
+执行前必须明确征得用户同意，不得自动执行：
+
+- `git push`（含 `git push -u`、force push 等所有 push 变体）
+- `git push --force` / `git push -f`
+- `rm -rf`、删除大量文件、清空目录
+- 修改生产环境、数据库迁移、DROP/TRUNCATE 等破坏性操作
+
+## git push 流程
+
+1. 完成 commit 后，**停止**，告知用户：分支名、commit 摘要、是否 ahead of remote
+2. 明确问：「是否 push 到远程？」
+3. 仅在用户明确同意（如「可以 push」「推吧」）后，才执行 `git push`
+
+## 禁止行为
+
+- 不得在用户未明确要求时执行 push
+- 不得用 `--no-verify` 跳过 hook，除非用户明确要求
+- 不得 force push 到 `main`/`master`，除非用户明确要求并理解风险

@@ -35,11 +35,12 @@ func (r *registryImpl) LoadFromDirectory(ctx context.Context, dirPath string) (*
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		skillDir := filepath.Join(dirPath, entry.Name())
+		info, err := os.Stat(skillDir)
+		if err != nil || !info.IsDir() {
 			continue
 		}
 
-		skillDir := filepath.Join(dirPath, entry.Name())
 		metaPath := filepath.Join(skillDir, "_meta.json")
 
 		if _, err := os.Stat(metaPath); os.IsNotExist(err) {
@@ -109,8 +110,34 @@ func (r *registryImpl) loadOneSkill(ctx context.Context, skillDir, dirName strin
 
 	name := extractName(promptBytes)
 	description := extractDescription(promptBytes)
+	category := "custom"
+	coverImage := ""
 	if name == "" {
 		name = dirName
+	}
+
+	novelMetaPath := filepath.Join(skillDir, "novel_metadata.json")
+	if nmBytes, err := os.ReadFile(novelMetaPath); err == nil {
+		var nm struct {
+			Title       string `json:"title"`
+			Description string `json:"description"`
+			Genre       string `json:"genre"`
+			CoverImage  string `json:"cover_image"`
+		}
+		if json.Unmarshal(nmBytes, &nm) == nil {
+			if nm.Title != "" {
+				name = nm.Title
+			}
+			if nm.Description != "" {
+				description = nm.Description
+			}
+			if nm.Genre != "" {
+				category = nm.Genre
+			}
+			if nm.CoverImage != "" {
+				coverImage = "/covers/" + dirName + "/cover.png"
+			}
+		}
 	}
 
 	scriptsPath := ""
@@ -130,7 +157,7 @@ func (r *registryImpl) loadOneSkill(ctx context.Context, skillDir, dirName strin
 		ID:               skillID,
 		Name:             name,
 		Version:          meta.Version,
-		Category:         "custom",
+		Category:         category,
 		Description:      description,
 		PromptContent:    string(promptBytes),
 		OutputSchema:     map[string]interface{}{"type": "object"},
@@ -140,6 +167,7 @@ func (r *registryImpl) loadOneSkill(ctx context.Context, skillDir, dirName strin
 		ScriptsPath:      scriptsPath,
 		TemplatesPath:    templatesPath,
 		ExamplesPath:     examplesPath,
+		CoverImage:       coverImage,
 		SkillDirectory:   skillDir,
 	}
 

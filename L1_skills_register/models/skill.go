@@ -20,6 +20,7 @@ type SkillPackage struct {
 	ScriptsPath     string                 `yaml:"scripts_path" json:"scripts_path,omitempty"`
 	TemplatesPath   string                 `yaml:"templates_path" json:"templates_path,omitempty"`
 	ExamplesPath    string                 `yaml:"examples_path" json:"examples_path,omitempty"`
+	CoverImage      string                 `yaml:"-" json:"-"`
 	SkillDirectory  string                 `yaml:"-" json:"-"`
 }
 
@@ -89,18 +90,19 @@ type DeprecateRequest struct {
 }
 
 type AllocSkillRequest struct {
-	Platform string `json:"platform"`
-	Theme    string `json:"theme,omitempty"`
-	Style    string `json:"style,omitempty"`
+	Platform   string   `json:"platform"`
+	Theme      string   `json:"theme,omitempty"`
+	Style      string   `json:"style,omitempty"`
+	ExcludeIDs []string `json:"exclude_ids,omitempty"`
 }
 
 type AllocSkillResponse struct {
-	SkillID          string            `json:"skill_id"`
-	Version          string            `json:"version"`
-	Name             string            `json:"name"`
-	Description      string            `json:"description"`
-	Category         string            `json:"category"`
-	ModelRecommended *ModelRecommended `json:"model_recommended,omitempty"`
+	SkillID     string `json:"skill_id"`
+	Version     string `json:"version"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Category    string `json:"category"`
+	CoverImage  string `json:"cover_image"`
 }
 
 type ApiError struct {

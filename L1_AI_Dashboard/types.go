@@ -37,6 +37,22 @@ type DashboardItem struct {
 	PublishedAt string `json:"publishedAt"`
 }
 
+type BatchStatsRequest struct {
+	TaskIDs []string `json:"taskIds"`
+}
+
+type TaskStats struct {
+	TotalPosts    int `json:"totalPosts"`
+	TotalViews    int `json:"totalViews"`
+	TotalLikes    int `json:"totalLikes"`
+	TotalComments int `json:"totalComments"`
+	TotalShares   int `json:"totalShares"`
+}
+
+type BatchStatsResponse struct {
+	Stats map[string]*TaskStats `json:"stats"`
+}
+
 // DashboardSummary 聚合汇总（本次查询结果集的纯总量，不返回均值）。
 type DashboardSummary struct {
 	TotalPosts    int `json:"totalPosts"`

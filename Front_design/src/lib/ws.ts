@@ -3,6 +3,9 @@ import type { WSEvent } from "@/types"
 
 const WS_BASE = process.env.NEXT_PUBLIC_WS_BASE || ""
 
+/** 任务详情页聊天 WebSocket（含自动重连）。false 时页面不连接，改由 HTTP 轮询拉回复 */
+export const TASK_DETAIL_CHAT_WS_ENABLED = false
+
 const MAX_RECONNECT_ATTEMPTS = 5
 const BASE_DELAY_MS = 1000
 
@@ -40,27 +43,44 @@ function createReconnectingWS(
   function connect() {
     if (intentionallyClosed) return
 
+    console.info("[task-ws] connecting", url)
     ws = new WebSocket(url)
 
     ws.onopen = () => {
+      console.info("[task-ws] open", url)
       attempt = 0
       onConnected?.()
     }
 
     ws.onmessage = (msg) => {
+      console.debug("[task-ws] raw message", msg.data)
       try {
         const event: WSEvent = JSON.parse(msg.data)
+        console.debug("[task-ws] event", event)
         onEvent(event)
-      } catch {
-        // ignore parse errors
+      } catch (err) {
+        console.warn("[task-ws] failed to parse message", err, msg.data)
       }
     }
 
-    ws.onerror = (err) => {
-      onError?.(err)
+    ws.onerror = () => {
+      // 主动 close / 页面切换 / StrictMode 重挂载时浏览器常会触发空 Event，并非真实故障
+      if (intentionallyClosed) return
+      const state = ws?.readyState
+      if (state === WebSocket.CLOSING || state === WebSocket.CLOSED) return
+      console.warn("[task-ws] connection error", { url, readyState: state })
+      onError?.(new Event("error"))
     }
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      if (!intentionallyClosed) {
+        console.info("[task-ws] close", {
+          url,
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+        })
+      }
       if (intentionallyClosed) {
         onClose?.()
         return

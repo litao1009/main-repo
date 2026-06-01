@@ -12,6 +12,7 @@ import (
 // Querier 看板查询接口（唯一对外暴露的方法）。
 type Querier interface {
 	Query(ctx context.Context, req DashboardQueryRequest) (*DashboardQueryResponse, error)
+	BatchQuery(ctx context.Context, taskIDs []string) (*BatchStatsResponse, error)
 	Health(ctx context.Context) error
 }
 
@@ -99,6 +100,39 @@ func (q *dashboardQuerier) Query(ctx context.Context, req DashboardQueryRequest)
 		Summary: summary,
 		Total:   summary.TotalPosts,
 	}, nil
+}
+
+func (q *dashboardQuerier) BatchQuery(ctx context.Context, taskIDs []string) (*BatchStatsResponse, error) {
+	if len(taskIDs) == 0 {
+		return &BatchStatsResponse{Stats: map[string]*TaskStats{}}, nil
+	}
+
+	query, args, err := buildBatchStatsQuery(taskIDs)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInternalError, err)
+	}
+
+	rows, err := q.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDBUnavailable, err)
+	}
+	defer rows.Close()
+
+	stats := make(map[string]*TaskStats, len(taskIDs))
+	for rows.Next() {
+		var taskID string
+		var ts TaskStats
+		if err := rows.Scan(&taskID, &ts.TotalPosts, &ts.TotalViews, &ts.TotalLikes, &ts.TotalComments, &ts.TotalShares); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInternalError, err)
+		}
+		stats[taskID] = &ts
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInternalError, err)
+	}
+
+	return &BatchStatsResponse{Stats: stats}, nil
 }
 
 func (q *dashboardQuerier) Health(_ context.Context) error {

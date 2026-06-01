@@ -29,6 +29,7 @@ const (
 	ErrCodeBuildRequest        = "BUILD_REQUEST_FAILED"
 	ErrCodeCredentialFailed    = "CREDENTIAL_FAILED"
 	ErrCodeInternalPanic       = "INTERNAL_PANIC"
+	ErrCodeDailyLimit          = "DAILY_LIMIT"
 
 	// 预检相关
 	ErrCodePreFlightFailed = "PRE_FLIGHT_FAILED"

@@ -20,21 +20,18 @@ import (
 // 通过调用 Puppeteer 脚本（scripts/publish_fanqie.js）实现浏览器自动化发布。
 // Cookie 通过环境变量 FANQIE_COOKIE 传入脚本，不经过命令行。
 type FanqiePublishAdapter struct {
-	scriptPath string // publish_fanqie.js 路径
-	nodeBin    string // node 可执行文件路径（默认 "node"）
+	scriptPath string
+	nodeBin    string
 	timeout    time.Duration
 }
 
 // NewFanqiePublishAdapter 创建番茄小说适配器（使用通用 AdapterConfig）。
-//
-// cfg.ScriptPath 必填，指向 publish_fanqie.js 脚本。
-// cfg.NodeBin 为空时默认 "node"，cfg.Timeout <= 0 时默认 90s。
 func NewFanqiePublishAdapter(cfg AdapterConfig) *FanqiePublishAdapter {
 	if cfg.NodeBin == "" {
 		cfg.NodeBin = "node"
 	}
 	if cfg.Timeout <= 0 {
-		cfg.Timeout = 300 * time.Second
+		cfg.Timeout = 600 * time.Second
 	}
 	return &FanqiePublishAdapter{
 		scriptPath: cfg.ScriptPath,
@@ -47,10 +44,8 @@ func (a *FanqiePublishAdapter) Platform() string {
 	return "fanqie"
 }
 
-const fanqieMinContentLen = 1000 // 番茄小说正文最低 1000 字
+const fanqieMinContentLen = 1000
 
-// CheckInput 番茄小说内容校验。
-// 规则：标题非空、正文非空、正文 ≥ 1000 字、正文字数 ≤ 20000 字。
 func (a *FanqiePublishAdapter) CheckInput(product ProductContent) string {
 	title := product.Title
 	if title == "" {
@@ -72,34 +67,72 @@ func (a *FanqiePublishAdapter) CheckInput(product ProductContent) string {
 	return ""
 }
 
-// fanqieInput 传入 Puppeteer 脚本的 JSON 结构。
+// --- Input/Output 结构 ---
+
 type fanqieInput struct {
-	Title         string `json:"title"`
-	Content       string `json:"content"`
-	NovelName     string `json:"novelName"`
-	VolumeName    string `json:"volumeName"`
-	ChapterNumber int    `json:"chapterNumber"`
+	Action        string `json:"action,omitempty"`
+	Title         string `json:"title,omitempty"`
+	Content       string `json:"content,omitempty"`
+	NovelName     string `json:"novelName,omitempty"`
+	VolumeName    string `json:"volumeName,omitempty"`
+	ChapterNumber int    `json:"chapterNumber,omitempty"`
+	DraftTitle    string `json:"draftTitle,omitempty"`
+	BookID        string `json:"bookId,omitempty"`
+	WorkID        string `json:"workId,omitempty"`
+	DraftItemID   string `json:"draftItemId,omitempty"`
 }
 
-// fanqieOutput Puppeteer 脚本的 JSON 输出。
 type fanqieOutput struct {
-	Success bool   `json:"success"`
-	PostID  string `json:"postId"`
-	Error   string `json:"error"`
+	Success    bool                 `json:"success"`
+	PostID     string               `json:"postId"`
+	Error      string               `json:"error"`
+	ErrorCode  string               `json:"errorCode"`
+	Action     string               `json:"action"`
+	WorkID     string               `json:"workId"`
+	Drafts     []FanqieDraftInfo    `json:"drafts"`
+	PublishedChapters []FanqieChapterInfo `json:"publishedChapters"`
+	LastPublished *FanqieLastPublished `json:"lastPublished"`
+	Volumes    []FanqieVolumeInfo   `json:"volumes"`
 }
 
-// Publish 调用 Puppeteer 脚本发布一章番茄小说。
-//
-// credentials 是番茄小说的 Cookie 字符串（如 "sessionid=xxx; ..."），
-// 通过环境变量 FANQIE_COOKIE 传入 Node.js 脚本，不经过命令行。
-//
-// 标题/作品/分卷/章节号 直接从 product 结构体读取（见 types.go ProductContent）。
+type FanqieDraftInfo struct {
+	Title         string `json:"title"`
+	ChapterNumber int    `json:"chapterNumber"`
+	ItemID        string `json:"itemId"`
+}
+
+type FanqieChapterInfo struct {
+	Title         string `json:"title"`
+	ChapterNumber int    `json:"chapterNumber"`
+	IsPublished   bool   `json:"isPublished"`
+}
+
+type FanqieLastPublished struct {
+	ChapterNumber int    `json:"chapterNumber"`
+	Title         string `json:"title"`
+}
+
+type FanqieVolumeInfo struct {
+	VolumeName string `json:"volumeName"`
+	VolumeID   string `json:"volumeId"`
+}
+
+type PlatformInfo struct {
+	WorkID            string
+	Drafts            []FanqieDraftInfo
+	PublishedChapters []FanqieChapterInfo
+	LastPublished     *FanqieLastPublished
+	Volumes           []FanqieVolumeInfo
+}
+
+// --- Core Methods ---
+
+// Publish 调用 Puppeteer 脚本发布一章番茄小说（原有直接发布流程）。
 func (a *FanqiePublishAdapter) Publish(ctx context.Context, product ProductContent, credentials string, maskedDisplay string) *PublishResult {
 	if credentials == "" {
 		return a.fail(ErrCodeCredentialFailed, "fanqie cookie is empty", maskedDisplay)
 	}
 
-	// 从 ProductContent 中读取番茄小说专用字段（带默认值回退）
 	title := product.Title
 	if title == "" {
 		title = firstLine(product.Text, 50)
@@ -113,28 +146,158 @@ func (a *FanqiePublishAdapter) Publish(ctx context.Context, product ProductConte
 		volumeName = "第一卷"
 	}
 	input := fanqieInput{
+		Action:        "publish",
 		Title:         title,
 		Content:       product.Text,
 		NovelName:     novelName,
 		VolumeName:    volumeName,
 		ChapterNumber: product.ChapterNumber,
 	}
+	return a.runScript(ctx, input, credentials, maskedDisplay)
+}
 
+// SaveDraft 将章节内容保存到番茄小说草稿箱。
+func (a *FanqiePublishAdapter) SaveDraft(ctx context.Context, title, content, novelName string, chapterNumber int, credentials string, workId string) *PublishResult {
+	if credentials == "" {
+		return a.fail(ErrCodeCredentialFailed, "fanqie cookie is empty", "")
+	}
+
+	if content == "" {
+		return a.fail(ErrCodeInputInvalid, "fanqie: content is empty", "")
+	}
+	if novelName == "" {
+		return a.fail(ErrCodeInputInvalid, "fanqie: novelName is empty", "")
+	}
+	if title == "" {
+		title = firstLine(content, 50)
+	}
+
+	input := fanqieInput{
+		Action:        "save_draft",
+		Title:         title,
+		Content:       content,
+		NovelName:     novelName,
+		ChapterNumber: chapterNumber,
+		WorkID:        workId,
+	}
+	return a.runScript(ctx, input, credentials, novelName)
+}
+
+// PublishDraft 从番茄小说草稿箱中发布指定草稿。
+// draftTitle 用于在草稿箱中匹配目标草稿，volumeName 指定发布到哪个分卷。
+func (a *FanqiePublishAdapter) PublishDraft(ctx context.Context, draftTitle, novelName, volumeName, credentials string, workId string, itemId string) *PublishResult {
+	if credentials == "" {
+		return a.fail(ErrCodeCredentialFailed, "fanqie cookie is empty", "")
+	}
+	if draftTitle == "" {
+		return a.fail(ErrCodeInputInvalid, "fanqie: draftTitle is empty", "")
+	}
+	if novelName == "" {
+		return a.fail(ErrCodeInputInvalid, "fanqie: novelName is empty", "")
+	}
+	if volumeName == "" {
+		volumeName = "第一卷"
+	}
+
+	input := fanqieInput{
+		Action:      "publish_draft",
+		DraftTitle:  draftTitle,
+		NovelName:   novelName,
+		VolumeName:  volumeName,
+		WorkID:      workId,
+		DraftItemID: itemId,
+	}
+	return a.runScript(ctx, input, credentials, novelName)
+}
+
+// GetPlatformInfo 获取番茄小说平台的草稿箱、已发布章节、分卷信息。
+// 用于发布前状态检查和发布后验证。
+func (a *FanqiePublishAdapter) GetPlatformInfo(ctx context.Context, novelName, credentials string, workId string) (*PlatformInfo, *PublishResult) {
+	if credentials == "" {
+		return nil, a.fail(ErrCodeCredentialFailed, "fanqie cookie is empty", "")
+	}
+	if novelName == "" {
+		return nil, a.fail(ErrCodeInputInvalid, "fanqie: novelName is empty", "")
+	}
+
+	input := fanqieInput{
+		Action:    "get_platform_info",
+		NovelName: novelName,
+		WorkID:    workId,
+	}
+
+	inputBytes, err := json.Marshal(input)
+	if err != nil {
+		return nil, a.fail(ErrCodeBuildRequest, "marshal input failed: "+err.Error(), "")
+	}
+
+	output, rawOutput, err := a.execScript(ctx, inputBytes, credentials)
+	if err != nil {
+		return nil, a.fail(ErrCodePlatformError, err.Error(), "")
+	}
+
+	if !output.Success {
+		code := classifyFanqieError(output.Error)
+		if output.ErrorCode != "" {
+			code = output.ErrorCode
+		}
+		return nil, a.fail(code, output.Error, "")
+	}
+
+	info := &PlatformInfo{
+		WorkID:            output.WorkID,
+		Drafts:            output.Drafts,
+		PublishedChapters: output.PublishedChapters,
+		LastPublished:     output.LastPublished,
+		Volumes:           output.Volumes,
+	}
+
+	rawLog := rawOutput
+	if len(rawLog) > 2000 {
+		rawLog = rawLog[len(rawLog)-2000:]
+	}
+	log.Printf("[fanqie] GetPlatformInfo: novel=%s workId=%s drafts=%d chapters=%d volumes=%d",
+		novelName, info.WorkID, len(info.Drafts), len(info.PublishedChapters), len(info.Volumes))
+
+	return info, nil
+}
+
+// --- 脚本执行 ---
+
+func (a *FanqiePublishAdapter) runScript(ctx context.Context, input fanqieInput, credentials string, maskedDisplay string) *PublishResult {
 	inputBytes, err := json.Marshal(input)
 	if err != nil {
 		return a.fail(ErrCodeBuildRequest, "marshal input failed: "+err.Error(), maskedDisplay)
 	}
 
-	// base64 编码，避免 JSON 中的换行/引号在命令行传递时被截断
+	output, _, err := a.execScript(ctx, inputBytes, credentials)
+	if err != nil {
+		return a.fail(ErrCodePlatformError, err.Error(), maskedDisplay)
+	}
+
+	if !output.Success {
+		code := classifyFanqieError(output.Error)
+		if output.ErrorCode != "" {
+			code = output.ErrorCode
+		}
+		return a.fail(code, output.Error, maskedDisplay)
+	}
+
+	return &PublishResult{
+		Platform:      "fanqie",
+		Status:        "ok",
+		PostID:        output.PostID,
+		MaskedDisplay: maskedDisplay,
+	}
+}
+
+func (a *FanqiePublishAdapter) execScript(ctx context.Context, inputBytes []byte, credentials string) (*fanqieOutput, string, error) {
 	inputBase64 := base64.StdEncoding.EncodeToString(inputBytes)
 
 	execCtx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	// 使用 --base64 模式：通过 stdin 管道传入 base64 数据，而非命令行参数
 	cmd := exec.CommandContext(execCtx, a.nodeBin, a.scriptPath, "--base64")
-
-	// 设置进程组，确保超时杀死 Node 时连带清理 Chrome 子进程
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -150,15 +313,13 @@ func (a *FanqiePublishAdapter) Publish(ctx context.Context, product ProductConte
 
 	cmd.Env = append(os.Environ(), "FANQIE_COOKIE="+credentials)
 
-	log.Printf("[fanqie] input JSON: %s", string(inputBytes))
-	log.Printf("[fanqie] cookie length=%d platform=%s", len(credentials), a.Platform())
+	log.Printf("[fanqie] input: action=%s cookie_len=%d", extractAction(inputBytes), len(credentials))
 
-	err = cmd.Run()
+	err := cmd.Run()
 
 	stderrStr := stderr.String()
 	stdoutStr := strings.TrimSpace(stdout.String())
 
-	// 始终打印脚本日志，便于排查发布流程
 	if len(stderrStr) > 0 {
 		var stderrLog string
 		if len(stderrStr) > 2000 {
@@ -169,33 +330,33 @@ func (a *FanqiePublishAdapter) Publish(ctx context.Context, product ProductConte
 		log.Printf("[fanqie] script log: %s", stderrLog)
 	}
 
-	// Try to parse stdout first, even on error — the script always writes
-	// JSON to stdout (both success and failure), and its error messages
-	// are more useful than generic "exit status 1".
 	if stdoutStr != "" {
 		var output fanqieOutput
 		if json.Unmarshal([]byte(stdoutStr), &output) == nil {
-			if output.Success {
-				return &PublishResult{
-					Platform:      "fanqie",
-					Status:        "ok",
-					PostID:        output.PostID,
-					MaskedDisplay: maskedDisplay,
-				}
-			}
-			return a.fail(classifyFanqieError(output.Error), output.Error, maskedDisplay)
+			return &output, stderrStr, nil
 		}
 	}
 
 	if err != nil {
 		if execCtx.Err() == context.DeadlineExceeded {
-			return a.fail(ErrCodeAPITimeout, fmt.Sprintf("puppeteer script timeout after %v", a.timeout), maskedDisplay)
+			return nil, stderrStr, fmt.Errorf("puppeteer script timeout after %v", a.timeout)
 		}
-		return a.fail(ErrCodePlatformError,
-			fmt.Sprintf("puppeteer script failed: %v (stderr: %s)", err, truncateStr(stderrStr, 200)), maskedDisplay)
+		return nil, stderrStr, fmt.Errorf("puppeteer script failed: %v (stderr: %s)", err, truncateStr(stderrStr, 200))
 	}
 
-	return a.fail(ErrCodePlatformError, "puppeteer script returned empty output", maskedDisplay)
+	return nil, stderrStr, fmt.Errorf("puppeteer script returned empty output")
+}
+
+func extractAction(inputBytes []byte) string {
+	var input fanqieInput
+	if json.Unmarshal(inputBytes, &input) == nil {
+		act := input.Action
+		if act == "" {
+			act = "publish"
+		}
+		return act
+	}
+	return "unknown"
 }
 
 // --- 辅助函数 ---
@@ -210,23 +371,24 @@ func (a *FanqiePublishAdapter) fail(code, msg string, maskedDisplay string) *Pub
 	}
 }
 
-// firstLine 取 text 的首行，限 maxRunes 字符。
 func firstLine(text string, maxRunes int) string {
 	lines := strings.SplitN(text, "\n", 2)
 	if len(lines) == 0 {
-		return "章节"
+		return ""
 	}
 	first := strings.TrimSpace(lines[0])
-	if len([]rune(first)) <= maxRunes {
+	runes := []rune(first)
+	if len(runes) <= maxRunes {
 		return first
 	}
-	return "章节"
+	return string(runes[:maxRunes])
 }
 
-// classifyFanqieError 将脚本返回的错误信息映射为错误码。
 func classifyFanqieError(errMsg string) string {
 	lower := strings.ToLower(errMsg)
 	switch {
+	case strings.Contains(lower, "daily_limit") || strings.Contains(lower, "上限") || strings.Contains(lower, "超限"):
+		return ErrCodeDailyLimit
 	case strings.Contains(lower, "cookie") || strings.Contains(lower, "expired") || strings.Contains(lower, "login"):
 		return ErrCodeAccount401
 	case strings.Contains(lower, "timeout"):

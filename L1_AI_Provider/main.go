@@ -47,6 +47,9 @@ func main() {
 		log.Printf("  - %s (%s) → %s", m.ID, m.Provider, m.RecommendedFor)
 	}
 
+	// ③ 启动自检：用 keys.json 中的 key 发起最小 API 调用验证有效性
+	mgr.SelfCheck()
+
 	// ④ 配置健康检查
 	warnings := mgr.Validate()
 	if len(warnings) > 0 {

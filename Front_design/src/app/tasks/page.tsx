@@ -11,7 +11,7 @@ import { formatRelativeTime } from "@/lib/utils"
 import { buildTaskDetailHref } from "@/lib/task-navigation"
 import { FileText, Plus, Search, Loader2, AlertCircle, Layers } from "lucide-react"
 import Link from "next/link"
-import { cn } from "@/lib/utils"
+import { cn, formatChapterLabel } from "@/lib/utils"
 
 const PLATFORM_LABELS: Record<string, { label: string; color: string }> = {
   fanqie:  { label: "番茄小说", color: "text-red-600 bg-red-50 border-red-100" },
@@ -177,11 +177,11 @@ export default function TaskListPage() {
                     {task.novel_name || task.topic}
                   </h3>
 
-                  {/* 描述 */}
-                  <p className="text-sm text-slate-500 line-clamp-1 mb-4 leading-relaxed">
+                  {/* 副标题：固定一行高度，无内容也占位 */}
+                  <p className="mb-4 h-[22px] text-sm leading-[22px] text-slate-500 line-clamp-1 overflow-hidden">
                     {task.volume_name && (task.chapter_number ?? 0) > 0 && task.title
-                      ? `${task.volume_name}第${task.chapter_number}章：${task.title}`
-                      : task.topic}
+                      ? `${task.volume_name} ${formatChapterLabel(task.chapter_number ?? 0)}：${task.title}`
+                      : task.topic || "\u00A0"}
                   </p>
 
                   {/* 模型 & 技能标签 */}

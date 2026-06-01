@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"clawstudios/pkg/logging"
@@ -104,7 +105,8 @@ type smTask struct {
 }
 
 func (f *SMDraftFetcher) FetchTaskMeta(taskID string) (skillID, model string) {
-	path := fmt.Sprintf("%s/tasks/%s/sessions.json", f.DataDir, taskID)
+	origTaskID := trimSMCombinedTaskID(taskID)
+	path := fmt.Sprintf("%s/tasks/%s/sessions.json", f.DataDir, origTaskID)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", ""
@@ -120,17 +122,29 @@ func (f *SMDraftFetcher) FetchTaskMeta(taskID string) (skillID, model string) {
 }
 
 func (f *SMDraftFetcher) Fetch(ctx context.Context, taskID string, sessionID string, version int) (string, error) {
-	path := fmt.Sprintf("%s/tasks/%s/sessions/%s/cwd/current_draft.md", f.DataDir, taskID, sessionID)
+	origTaskID := trimSMCombinedTaskID(taskID)
+	path := fmt.Sprintf("%s/tasks/%s/sessions/%s/cwd/current_draft.md", f.DataDir, origTaskID, sessionID)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		// Fallback: try versioned draft in task dir
-		path = fmt.Sprintf("%s/tasks/%s/draft_v%d.md", f.DataDir, taskID, version)
+		path = fmt.Sprintf("%s/tasks/%s/draft_v%d.md", f.DataDir, origTaskID, version)
 		data, err = os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("draft not found: %w", err)
 		}
 	}
 	return string(data), nil
+}
+
+// trimSMCombinedTaskID strips the session suffix from a combined task_id
+// (format: "originalTaskID_XXXXXXXX") to restore the original SM task directory name.
+// If the taskID does not have the expected suffix pattern, it is returned unchanged.
+func trimSMCombinedTaskID(taskID string) string {
+	idx := strings.LastIndex(taskID, "_")
+	if idx < 0 || len(taskID)-idx-1 != 8 {
+		return taskID
+	}
+	return taskID[:idx]
 }
 
 // LocalDraftFetcher 从本地文件系统读取草稿

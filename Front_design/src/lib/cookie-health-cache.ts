@@ -20,6 +20,8 @@ export interface CookieHealthCacheEntry {
    *  - 'heuristic'  本地 updated_at 时间估算（不准确，仅作兜底）
    */
   source: 'backend' | 'heuristic'
+  /** 检测时账号的 updated_at；与其它设备重绑后不一致则视为缓存失效 */
+  credentialUpdatedAt?: string
 }
 
 const PREFIX = 'ck_health_'
@@ -50,6 +52,27 @@ export function setCachedEntry(accountId: string, entry: CookieHealthCacheEntry)
 /** 判断缓存条目是否已过期（超过 TTL） */
 export function isCacheStale(entry: CookieHealthCacheEntry, ttlMs = DEFAULT_TTL_MS): boolean {
   return Date.now() - entry.checkedAt > ttlMs
+}
+
+/** 服务端凭证是否已更新（跨设备重绑、本机重新登录） */
+export function isCacheOutdated(
+  entry: CookieHealthCacheEntry,
+  accountUpdatedAt: string
+): boolean {
+  if (!entry.credentialUpdatedAt) return true
+  return entry.credentialUpdatedAt !== accountUpdatedAt
+}
+
+/** 是否可直接使用本地缓存展示状态 */
+export function shouldUseHealthCache(
+  entry: CookieHealthCacheEntry | null | undefined,
+  accountUpdatedAt: string,
+  ttlMs = DEFAULT_TTL_MS
+): boolean {
+  if (!entry) return false
+  if (isCacheStale(entry, ttlMs)) return false
+  if (isCacheOutdated(entry, accountUpdatedAt)) return false
+  return true
 }
 
 /** 删除某账号的缓存（解绑或重新绑定时调用） */

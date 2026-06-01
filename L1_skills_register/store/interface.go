@@ -11,7 +11,9 @@ type SkillStore interface {
 	Get(ctx context.Context, skillID, version string) (*models.SkillPackage, error)
 	GetLatest(ctx context.Context, skillID string) (*models.SkillPackage, error)
 	List(ctx context.Context, filter models.SkillFilter) ([]models.SkillSummary, error)
-	AllocSkill(ctx context.Context, platform, theme, style string) (*models.AllocSkillResponse, error)
+	AllocSkill(ctx context.Context, platform, theme, style string, excludeIDs []string) ([]*models.AllocSkillResponse, error)
+	ReleaseSkill(ctx context.Context, skillID string) error
+	AvailableCount(ctx context.Context, platform, theme, style string) (int, error)
 	Deprecate(ctx context.Context, skillID, version string) error
 	Exists(ctx context.Context, skillID, version string) (bool, error)
 	CountByOwner(ctx context.Context, ownerUID string) (int, error)

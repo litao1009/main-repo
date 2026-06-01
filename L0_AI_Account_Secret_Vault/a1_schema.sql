@@ -4,12 +4,18 @@ CREATE TABLE IF NOT EXISTS a1_credentials (
     uid         VARCHAR(64)  NOT NULL COMMENT '用户唯一标识',
     platform    VARCHAR(32)  NOT NULL COMMENT '平台标识: fanqie | wechat | douyin | bilibili | zhulang',
     credential  TEXT         NOT NULL COMMENT '加密后的凭证密文（Base64 编码）',
+    credential_fingerprint VARCHAR(64) DEFAULT NULL COMMENT '凭证 SHA256 指纹（规范化后，用于绑定时去重）',
+    platform_author_id VARCHAR(128) DEFAULT NULL COMMENT '平台作者唯一 ID（如番茄 mp_name、逐浪 uid）',
+    masked_display VARCHAR(128) DEFAULT NULL COMMENT '脱敏展示名（同平台全局唯一）',
     created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
 
     UNIQUE KEY uk_account_id (account_id),
     INDEX idx_uid (uid),
-    INDEX idx_platform (platform)
+    INDEX idx_platform (platform),
+    INDEX idx_platform_fingerprint (platform, credential_fingerprint),
+    INDEX idx_platform_author (platform, platform_author_id),
+    INDEX idx_uid_platform_author (uid, platform, platform_author_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='账号凭证加密存储表';
 

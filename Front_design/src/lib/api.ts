@@ -19,6 +19,7 @@ import type {
   Session,
   Draft,
   TaskMessagesResponse,
+  TaskMessageInput,
   SendMessageResponse,
   PublishInput,
   DashboardQueryRequest,
@@ -29,6 +30,15 @@ import type {
   CreateUserResponse,
   UpdateUserRequest,
   UpdateUserResponse,
+  AllocSkillInput,
+  AllocSkillResponse,
+  AllocSkillData,
+  AllocSkillItem,
+  AllocSkillListResponse,
+  BookInfoResponse,
+  BookContentResponse,
+  TaskPublishListResponse,
+  PublishRecord,
 } from "@/types"
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || ""
@@ -40,13 +50,28 @@ function authHeaders(): Record<string, string> {
   return headers
 }
 
+const inflightGetRequests = new Map<string, Promise<unknown>>()
+
+function dedupeInflight<T>(key: string, request: () => Promise<T>): Promise<T> {
+  const existing = inflightGetRequests.get(key)
+  if (existing) return existing as Promise<T>
+
+  const promise = request().finally(() => {
+    inflightGetRequests.delete(key)
+  })
+  inflightGetRequests.set(key, promise)
+  return promise
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { headers: authHeaders() })
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.message || body.errorMessage || `HTTP ${res.status}`)
-  }
-  return res.json()
+  return dedupeInflight(`GET ${path}`, async () => {
+    const res = await fetch(`${API_BASE}${path}`, { headers: authHeaders() })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body.message || body.errorMessage || `HTTP ${res.status}`)
+    }
+    return res.json() as Promise<T>
+  })
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -57,7 +82,8 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   })
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}))
-    throw new Error(errBody.message || errBody.errorMessage || `HTTP ${res.status}`)
+    const detail = errBody.detail ? ` ${errBody.detail}` : ""
+    throw new Error((errBody.message || errBody.errorMessage || `HTTP ${res.status}`) + detail)
   }
   return res.json()
 }
@@ -72,6 +98,15 @@ export async function fetchModels(): Promise<Model[]> {
 export async function fetchSkills(): Promise<Skill[]> {
   const data = await get<{ skills: Skill[]; total: number }>("/api/skill/list")
   return data.skills || []
+}
+
+export async function allocSkill(input: AllocSkillInput): Promise<AllocSkillItem[]> {
+  const resp = await post<AllocSkillListResponse | { skills: AllocSkillItem[]; total: number }>("/api/task/alloc_skill", input)
+  const raw = resp as unknown as Record<string, unknown>
+  const data = raw.data as Record<string, unknown> | undefined
+  if (data && Array.isArray(data.skills)) return data.skills as AllocSkillItem[]
+  if (raw.skills && Array.isArray(raw.skills)) return raw.skills as AllocSkillItem[]
+  throw new Error("获取创作方案失败：未返回有效数据")
 }
 
 // ===== 账号 =====
@@ -157,6 +192,17 @@ export async function fetchTaskMessages(taskId: string): Promise<TaskMessagesRes
   return get<TaskMessagesResponse>(`/api/task/${taskId}/messages`)
 }
 
+export async function clearTaskMessages(taskId: string): Promise<{ cleared: boolean }> {
+  return del<{ cleared: boolean }>(`/api/task/${taskId}/messages`)
+}
+
+export async function sendTaskMessage(
+  taskId: string,
+  input: TaskMessageInput
+): Promise<SendMessageResponse> {
+  return post<SendMessageResponse>(`/api/task/${taskId}/message`, input)
+}
+
 export async function sendMessage(
   sessionId: string,
   text: string,
@@ -176,6 +222,43 @@ export async function closeSession(sessionId: string): Promise<{ episode_id: str
 
 export async function publishTask(taskId: string, body: PublishInput): Promise<{ status: string; taskId: string; results?: Array<{ status: string; platform: string; accountId: string; postId?: string; errorCode?: string }> }> {
   return post<any>(`/api/task/${taskId}/publish`, body)
+}
+
+function normalizePublishRecord(raw: Record<string, unknown>): PublishRecord {
+  return {
+    postId: String(raw.postId ?? raw.post_id ?? ""),
+    accountId: String(raw.accountId ?? raw.account_id ?? ""),
+    platform: String(raw.platform ?? ""),
+    skillId: String(raw.skillId ?? raw.skill_id ?? ""),
+    sessionId: String(raw.sessionId ?? raw.session_id ?? ""),
+    novelName: String(raw.novelName ?? raw.novel_name ?? ""),
+    loginName: raw.loginName != null ? String(raw.loginName) : raw.login_name != null ? String(raw.login_name) : undefined,
+    publishedAt: String(raw.publishedAt ?? raw.published_at ?? ""),
+    views: Number(raw.views ?? 0),
+    likes: Number(raw.likes ?? 0),
+    comments: Number(raw.comments ?? 0),
+    shares: Number(raw.shares ?? 0),
+  }
+}
+
+/** 任务下已成功发布记录（权威数据源，按 sessionId 匹配章节） */
+export async function fetchTaskPublishList(taskId: string): Promise<TaskPublishListResponse> {
+  const resp = await get<unknown>(`/api/task/${taskId}/publish/list`)
+  const raw = resp as Record<string, unknown>
+  const payload = (raw.data ?? raw) as Record<string, unknown>
+  const items = (Array.isArray(payload.items) ? payload.items : []).map((row) =>
+    normalizePublishRecord(row as Record<string, unknown>),
+  )
+  const summaryRaw = payload.summary as Record<string, unknown> | undefined
+  const summary = {
+    totalPosts: Number(summaryRaw?.totalPosts ?? items.length),
+    totalViews: Number(summaryRaw?.totalViews ?? 0),
+    totalLikes: Number(summaryRaw?.totalLikes ?? 0),
+    totalComments: Number(summaryRaw?.totalComments ?? 0),
+    totalShares: Number(summaryRaw?.totalShares ?? 0),
+  }
+  const total = typeof payload.total === "number" ? payload.total : summary.totalPosts
+  return { items, summary, total }
 }
 
 // ===== 看板 =====
@@ -223,8 +306,29 @@ export async function updateTask(taskId: string, body: { novel_name?: string }):
   await post<unknown>(`/api/task/${taskId}/update`, body)
 }
 
-export async function deleteTask(taskId: string): Promise<void> {
-  await del<unknown>(`/api/task/${taskId}`)
+export interface TaskStopResult {
+  task_id: string
+  status: "stopping" | "stopped" | "completed" | string
+}
+
+/** 停止任务（中止自动发布流程，不删除已生成内容） */
+export async function stopTask(taskId: string, userId: string): Promise<TaskStopResult> {
+  const resp = await post<{
+    code?: number
+    message?: string
+    detail?: string
+    data?: TaskStopResult
+  }>("/api/task/stop", { task_id: taskId, user_id: userId })
+  const raw = resp as unknown as Record<string, unknown>
+  if (typeof raw.code === "number" && raw.code !== 0) {
+    const detail = typeof raw.detail === "string" ? ` ${raw.detail}` : ""
+    throw new Error((raw.message as string) || "停止任务失败" + detail)
+  }
+  const data = (raw.data ?? raw) as TaskStopResult
+  if (!data?.task_id) {
+    throw new Error("停止任务失败：未返回有效数据")
+  }
+  return data
 }
 
 export async function fetchTaskSessions(taskId: string): Promise<{
@@ -244,6 +348,24 @@ export async function fetchTaskSessions(taskId: string): Promise<{
 export async function generateNovelTitle(topic: string): Promise<{ titles: string[]; content: string }> {
   const resp = await post<{ code: number; data: { titles: string[]; content: string } }>("/api/novel/title-suggest", { topic })
   return resp.data
+}
+
+export async function getBookInfo(taskId: string): Promise<BookInfoResponse> {
+  const resp = await get<{ code: number; data: BookInfoResponse }>(`/api/task/${taskId}/book/info`)
+  return (resp as unknown as Record<string, unknown>).data as BookInfoResponse
+}
+
+export async function getBookContent(
+  taskId: string,
+  volumeName: string,
+  chapterNumber: number
+): Promise<BookContentResponse> {
+  const params = new URLSearchParams({
+    volume_name: volumeName,
+    chapter_number: chapterNumber.toString(),
+  })
+  const resp = await get<{ code: number; data: BookContentResponse }>(`/api/task/${taskId}/book/content?${params.toString()}`)
+  return (resp as unknown as Record<string, unknown>).data as BookContentResponse
 }
 
 async function put<T>(path: string, body: unknown): Promise<T> {

@@ -122,6 +122,45 @@ FROM (` + filtered + `) AS dashboard_filtered`
 	return query, args, nil
 }
 
+func buildBatchStatsQuery(taskIDs []string) (string, []interface{}, error) {
+	if len(taskIDs) == 0 {
+		return "", nil, nil
+	}
+
+	placeholders := make([]string, len(taskIDs))
+	args := make([]interface{}, len(taskIDs))
+	for i, tid := range taskIDs {
+		placeholders[i] = "?"
+		args[i] = tid
+	}
+
+	query := `
+SELECT
+    pr.task_id,
+    COUNT(*) AS total_posts,
+    COALESCE(SUM(ps.views), 0) AS total_views,
+    COALESCE(SUM(ps.likes), 0) AS total_likes,
+    COALESCE(SUM(ps.comments), 0) AS total_comments,
+    COALESCE(SUM(ps.shares), 0) AS total_shares
+FROM publish_record pr
+LEFT JOIN (
+    SELECT post_id, views, likes, comments, shares
+    FROM platform_stats
+    WHERE (post_id, snapshot_at) IN (
+        SELECT post_id, MAX(snapshot_at)
+        FROM platform_stats
+        GROUP BY post_id
+    )
+) ps ON ps.post_id = pr.post_id
+WHERE pr.status = 'ok'
+  AND pr.post_id IS NOT NULL
+  AND pr.post_id != ''
+  AND pr.task_id IN (` + strings.Join(placeholders, ",") + `)
+GROUP BY pr.task_id`
+
+	return query, args, nil
+}
+
 func buildInClause(column string, values []string, args *[]interface{}) string {
 	if len(values) == 0 {
 		return ""

@@ -3,13 +3,11 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 
 	"L1_skills_register/models"
 	"L1_skills_register/registry"
-	"L1_skills_register/store"
 	"clawstudios/pkg/logging"
 )
 
@@ -18,12 +16,14 @@ const InternalAuthHeader = "X-Internal-Token"
 type Handler struct {
 	reg          registry.Registry
 	internalAuth string
+	skillDir     string
 }
 
-func NewHandler(reg registry.Registry, internalAuth string) *Handler {
+func NewHandler(reg registry.Registry, internalAuth, skillDir string) *Handler {
 	return &Handler{
 		reg:          reg,
 		internalAuth: internalAuth,
+		skillDir:     skillDir,
 	}
 }
 
@@ -34,7 +34,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/skill/validate", h.handleValidate)
 	mux.HandleFunc("/api/skill/bootstrap", h.handleBootstrap)
 	mux.HandleFunc("/api/skill/alloc", h.handleAllocSkill)
+	mux.HandleFunc("/api/skill/alloc/release", h.handleReleaseSkill)
+	mux.HandleFunc("/api/skill/alloc/available", h.handleAvailableCount)
 	mux.HandleFunc("/api/skill/", h.handleSkillByID)
+
+	mux.Handle("/covers/", http.StripPrefix("/covers/", http.FileServer(http.Dir(h.skillDir))))
 }
 
 func (h *Handler) requireInternalAuth(r *http.Request) bool {
@@ -203,6 +207,70 @@ func (h *Handler) handleValidate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (h *Handler) handleReleaseSkill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST allowed")
+		return
+	}
+
+	logger := logging.FromContext(r.Context())
+
+	var req struct {
+		SkillID string `json:"skill_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if logger != nil {
+			logger.Error(logging.ErrInvalidParam, "decode release request failed: %v", err)
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+
+	if req.SkillID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "skill_id is required")
+		return
+	}
+
+	if err := h.reg.ReleaseSkill(r.Context(), req.SkillID); err != nil {
+		if logger != nil {
+			logger.Error(logging.ErrInternal, "release skill %s failed: %v", req.SkillID, err)
+		}
+		writeError(w, http.StatusInternalServerError, "release_failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"skill_id": req.SkillID,
+		"released": true,
+	})
+}
+
+func (h *Handler) handleAvailableCount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET allowed")
+		return
+	}
+
+	logger := logging.FromContext(r.Context())
+
+	platform := r.URL.Query().Get("platform")
+	theme := r.URL.Query().Get("theme")
+	style := r.URL.Query().Get("style")
+
+	count, err := h.reg.AvailableCount(r.Context(), platform, theme, style)
+	if err != nil {
+		if logger != nil {
+			logger.Error(logging.ErrInternal, "available count failed: %v", err)
+		}
+		writeError(w, http.StatusInternalServerError, "count_failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"available": count,
+	})
+}
+
 func (h *Handler) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST allowed")
@@ -257,17 +325,17 @@ func (h *Handler) handleSkillByID(w http.ResponseWriter, r *http.Request) {
 
 	if !h.requireInternalAuth(r) {
 		dr := struct {
-			SkillID          string            `json:"skill_id"`
-			Version          string            `json:"version"`
-			Name             string            `json:"name"`
-			Description      string            `json:"description"`
-			Category         string            `json:"category"`
+			SkillID          string                 `json:"skill_id"`
+			Version          string                 `json:"version"`
+			Name             string                 `json:"name"`
+			Description      string                 `json:"description"`
+			Category         string                 `json:"category"`
 			ModelRecommended *models.ModelRecommended `json:"model_recommended"`
-			Visibility       string            `json:"visibility"`
-			Status           string            `json:"status"`
-			ScriptsPath      string            `json:"scripts_path,omitempty"`
-			TemplatesPath    string            `json:"templates_path,omitempty"`
-			ExamplesPath     string            `json:"examples_path,omitempty"`
+			Visibility       string                 `json:"visibility"`
+			Status           string                 `json:"status"`
+			ScriptsPath      string                 `json:"scripts_path,omitempty"`
+			TemplatesPath    string                 `json:"templates_path,omitempty"`
+			ExamplesPath     string                 `json:"examples_path,omitempty"`
 		}{
 			SkillID: skillID,
 		}
@@ -314,22 +382,22 @@ func (h *Handler) handleSkillByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fullResp := map[string]interface{}{
-		"skill_id":           pkg.ID,
-		"version":            pkg.Version,
-		"name":               pkg.Name,
-		"description":        pkg.Description,
-		"category":           pkg.Category,
-		"model_recommended":  pkg.ModelRecommended,
-		"prompt_content":     pkg.PromptContent,
-		"output_schema":      pkg.OutputSchema,
-		"pre_hook":           pkg.PreHook,
-		"post_hook":          pkg.PostHook,
-		"visibility":         pkg.Visibility,
-		"status":             pkg.Status,
-		"owner_uid":          pkg.OwnerUID,
-		"scripts_path":       pkg.ScriptsPath,
-		"templates_path":     pkg.TemplatesPath,
-		"examples_path":      pkg.ExamplesPath,
+		"skill_id":          pkg.ID,
+		"version":           pkg.Version,
+		"name":              pkg.Name,
+		"description":       pkg.Description,
+		"category":          pkg.Category,
+		"model_recommended": pkg.ModelRecommended,
+		"prompt_content":    pkg.PromptContent,
+		"output_schema":     pkg.OutputSchema,
+		"pre_hook":          pkg.PreHook,
+		"post_hook":         pkg.PostHook,
+		"visibility":        pkg.Visibility,
+		"status":            pkg.Status,
+		"owner_uid":         pkg.OwnerUID,
+		"scripts_path":      pkg.ScriptsPath,
+		"templates_path":    pkg.TemplatesPath,
+		"examples_path":     pkg.ExamplesPath,
 	}
 
 	writeJSON(w, http.StatusOK, fullResp)
@@ -404,21 +472,20 @@ func (h *Handler) handleAllocSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.reg.AllocSkill(r.Context(), req.Platform, req.Theme, req.Style)
+	result, err := h.reg.AllocSkill(r.Context(), req.Platform, req.Theme, req.Style, req.ExcludeIDs)
 	if err != nil {
-		if errors.Is(err, store.ErrNoAvailableSkill) {
-			if logger != nil {
-				logger.Warn(logging.WarnServiceDegraded, "no available skill for platform=%s theme=%s style=%s", req.Platform, req.Theme, req.Style)
-			}
-			writeError(w, http.StatusNotFound, "no_available_skill", "no available skill for the given criteria")
-			return
-		}
 		if logger != nil {
-			logger.Error(logging.ErrInternal, "alloc skill failed: %v", err)
+			logger.Warn(logging.WarnServiceDegraded, "alloc skill failed: platform=%s theme=%s style=%s: %v", req.Platform, req.Theme, req.Style, err)
 		}
 		writeError(w, http.StatusInternalServerError, "alloc_failed", err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, result)
+	if result == nil {
+		result = []*models.AllocSkillResponse{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"skills": result,
+		"total":  len(result),
+	})
 }

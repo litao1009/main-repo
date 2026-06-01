@@ -107,8 +107,8 @@ export function Sidebar() {
 
         {/* 底部用户区（退出功能） */}
         {mounted && user && (
-          <div className="border-t border-slate-100 px-4 py-4 flex-shrink-0">
-            <div className="flex items-center gap-3">
+          <div className="flex h-[4.5rem] flex-shrink-0 items-center border-t border-slate-200 px-4">
+            <div className="flex w-full items-center gap-3">
               <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-orange-400 to-red-500 flex items-center justify-center flex-shrink-0">
                 <span className="text-white text-xs font-bold">
                   {user.username.slice(0, 2).toUpperCase()}

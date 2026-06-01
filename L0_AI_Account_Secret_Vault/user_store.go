@@ -142,10 +142,12 @@ func (s *UserStore) ListUsers(ctx context.Context, page, size int, priorityUID s
 		return nil, 0, fmt.Errorf("count users: %w", err)
 	}
 
+	// task_count 由 BFF 根据 Session Manager 创作任务数填充（与任务列表一致）。
+	// 勿用 workflow_task：该表记录发布流水线运行，数量远大于实际创作任务。
 	query := `
 		SELECT u.uid, u.username, u.role, u.created_at,
 		       COALESCE(c.account_count, 0) AS account_count,
-		       COALESCE(t.task_count, 0) AS task_count,
+		       0 AS task_count,
 		       u.last_login_at
 		FROM a1_users u
 		LEFT JOIN (
@@ -154,11 +156,6 @@ func (s *UserStore) ListUsers(ctx context.Context, page, size int, priorityUID s
 			WHERE credential IS NOT NULL AND credential != ''
 			GROUP BY uid
 		) c ON c.uid COLLATE utf8mb4_unicode_ci = u.uid
-		LEFT JOIN (
-			SELECT uid, COUNT(*) AS task_count
-			FROM workflow_task
-			GROUP BY uid
-		) t ON t.uid COLLATE utf8mb4_unicode_ci = u.uid
 		ORDER BY (u.uid = ?) DESC, u.created_at DESC
 		LIMIT ? OFFSET ?
 	`
