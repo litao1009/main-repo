@@ -484,6 +484,97 @@ async function doPublishDraft(cookieStr, input) {
 }
 
 
+async function doPublishArticle(cookieStr, input) {
+    const { workId, itemId, title, content, volumeName, volumeId } = input;
+    if (!workId)  { fail('missing required field: workId'); return; }
+    if (!content) { fail('missing required field: content'); return; }
+    if (!title)   { fail('missing required field: title'); return; }
+    log('info', 'publish_article starting', { workId, itemId: itemId || '(from draft list)', title, volumeName, contentLen: content.length });
+    const browser = await launchBrowser(); let page;
+    try {
+        page = await browser.newPage(); await page.setViewport(CONFIG.VIEWPORT);
+        await loginAndNavigate(page, cookieStr);
+        if (workId) { await enterNovelByWorkId(page, workId, input.novelName || ''); }
+        await sleep(2000); await dismissPopups(page); await sleep(1000);
+
+        const result = await page.evaluate(async (params) => {
+            const cookieMs = document.cookie.match(/msToken=([^;]+)/);
+            const msToken = cookieMs ? decodeURIComponent(cookieMs[1]) : '';
+
+            let finalItemId = params.itemId;
+
+            // 如果传入了 itemId，直接使用；否则从草稿列表 API 中按标题匹配获取
+            if (!finalItemId) {
+                const draftUrl = 'https://fanqienovel.com/api/author/chapter/draft_list/v1?book_id=' + params.workId + '&page_index=0&page_count=50';
+                if (msToken) { draftUrl += '&msToken=' + encodeURIComponent(msToken); }
+                const draftResp = await fetch(draftUrl, {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' }
+                });
+                const draftData = await draftResp.json();
+                const drafts = draftData.data?.draft_list || [];
+                for (const d of drafts) {
+                    if (d.title && (d.title === params.title || d.title.includes(params.title))) {
+                        finalItemId = d.item_id || '';
+                        break;
+                    }
+                }
+                if (!finalItemId) {
+                    return { code: -1, message: 'draft not found in draft list, title=' + params.title + ' drafts_count=' + drafts.length };
+                }
+            }
+
+            let htmlContent = '';
+            const paragraphs = params.content.split('\n\n');
+            for (const p of paragraphs) {
+                const trimmed = p.trim();
+                if (trimmed === '') {
+                    htmlContent += '<p><br></p>';
+                } else {
+                    htmlContent += '<p>' + trimmed + '</p>';
+                }
+            }
+
+            const url = 'https://fanqienovel.com/api/author/publish_article/v0/?msToken=' + encodeURIComponent(msToken);
+            const formBody = new URLSearchParams();
+            formBody.append('aid', '2503');
+            formBody.append('app_name', 'muye_novel');
+            formBody.append('item_id', finalItemId);
+            formBody.append('book_id', params.workId);
+            formBody.append('content', htmlContent);
+            formBody.append('volume_name', params.volumeName);
+            formBody.append('volume_id', params.volumeId);
+            formBody.append('title', params.title);
+            formBody.append('publish_status', '1');
+            formBody.append('timer_status', '0');
+            formBody.append('need_pay', '0');
+            formBody.append('device_platform', 'pc');
+            formBody.append('speak_type', '0');
+            formBody.append('use_ai', '2');
+            formBody.append('timer_time', '');
+            formBody.append('timer_chapter_preview', '[]');
+            formBody.append('has_chapter_ad', 'false');
+            formBody.append('chapter_ad_types', '');
+
+            const resp = await fetch(url, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Accept': 'application/json' },
+                body: formBody
+            });
+            const data = await resp.json();
+            return { code: data.code, message: data.message, itemId: data.data?.item_id || finalItemId };
+        }, { workId, itemId: itemId || '', title, content, volumeName, volumeId: volumeId || '' });
+
+        log('info', 'publish_article response', { code: result.code, message: result.message, itemId: result.itemId });
+        if (result.code === 0) {
+            return { success: true, action: 'publish_article', postId: result.itemId || itemId };
+        }
+        throw new Error('publish_article failed: code=' + result.code + ' msg=' + (result.message || ''));
+    } finally { await browser.close().catch(() => {}); _globalBrowser = null; log('info', 'browser closed'); }
+}
+
+
 function getMsToken(page) {
     return page.evaluate(() => {
         const m = document.cookie.match(/msToken=([^;]+)/);
@@ -544,6 +635,9 @@ async function main() {
                     break;
                 case 'publish_draft':
                     result = await doPublishDraft(cookieStr, input);
+                    break;
+                case 'publish_article':
+                    result = await doPublishArticle(cookieStr, input);
                     break;
                 case 'get_platform_info':
                     result = await doGetPlatformInfo(cookieStr, input);

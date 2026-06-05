@@ -79,6 +79,7 @@ type fanqieInput struct {
 	Content       string `json:"content,omitempty"`
 	NovelName     string `json:"novelName,omitempty"`
 	VolumeName    string `json:"volumeName,omitempty"`
+	VolumeID      string `json:"volumeId,omitempty"`
 	ChapterNumber int    `json:"chapterNumber,omitempty"`
 	DraftTitle    string `json:"draftTitle,omitempty"`
 	BookID        string `json:"bookId,omitempty"`
@@ -221,6 +222,28 @@ func (a *FanqiePublishAdapter) PublishDraft(ctx context.Context, draftTitle, nov
 		DraftItemID: itemId,
 	}
 	return a.runScript(ctx, input, credentials, novelName)
+}
+
+// PublishDraftViaPageAPI 通过 Puppeteer 脚本在浏览器内调用 publish_article API 发布草稿（不操作 DOM）。
+func (a *FanqiePublishAdapter) PublishDraftViaPageAPI(ctx context.Context, workId, itemId, title, content, volumeName, volumeId, credentials string) *PublishResult {
+	if credentials == "" {
+		return a.fail(ErrCodeCredentialFailed, "fanqie cookie is empty", "")
+	}
+	if workId == "" {
+		return a.fail(ErrCodeInputInvalid, "fanqie: workId is empty", "")
+	}
+
+	input := fanqieInput{
+		Action:      "publish_article",
+		Title:       title,
+		Content:     content,
+		VolumeName:  volumeName,
+		VolumeID:    volumeId,
+		WorkID:      workId,
+		DraftItemID: itemId,
+		NovelName:   volumeName,
+	}
+	return a.runScript(ctx, input, credentials, "")
 }
 
 // GetPlatformInfo 获取番茄小说平台的草稿箱、已发布章节、分卷信息。
