@@ -20,27 +20,12 @@
 'use strict';
 
 const puppeteer = require('puppeteer');
-const fs = require('fs');
 
 // ======================== 日志 ========================
 
-const LOG_DIR = '/tmp/logs';
-try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
-
-let _logPrefix = '';
-
-function setLogPrefix(novelName) {
-    _logPrefix = 'fanqie_' + (novelName || 'unknown').replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '_').substring(0, 60);
-}
-
 function log(level, msg, data) {
     const entry = { time: new Date().toISOString(), level, msg, ...(data ? { data } : {}) };
-    const line = JSON.stringify(entry) + '\n';
-    process.stderr.write(line);
-    try {
-        fs.appendFileSync(LOG_DIR + '/fanqie_publish.log', line);
-        if (_logPrefix) { fs.appendFileSync(LOG_DIR + '/' + _logPrefix + '.log', line); }
-    } catch (_) {}
+    process.stderr.write(JSON.stringify(entry) + '\n');
 }
 
 // ======================== 配置 ========================
@@ -55,25 +40,6 @@ const CONFIG = {
     VIEWPORT: { width: 1920, height: 1080 },
     MIN_CONTENT_LENGTH: 1000, // 正文最低字数
 };
-
-let _globalBrowser = null;
-
-async function launchBrowser() {
-    log('info', 'launching browser');
-    const browser = await puppeteer.launch({
-        headless: 'new',
-        protocolTimeout: 180000,
-        args: [
-            '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-            '--disable-gpu', '--disable-extensions', '--disable-background-networking',
-            '--disable-sync', '--no-first-run', '--disable-features=TranslateUI',
-            '--disable-software-rasterizer', '--memory-pressure-off',
-            '--js-flags=--max-old-space-size=256',
-        ],
-    });
-    _globalBrowser = browser;
-    return browser;
-}
 
 // ======================== 工具函数 ========================
 
@@ -111,30 +77,6 @@ function readStdinBase64() {
     });
 }
 
-function parseChapterNumber(obj) {
-    if (obj.chapter_number != null && obj.chapter_number > 0) return obj.chapter_number;
-    const title = obj.title || '';
-    const m = title.match(/第\s*([\d一二三四五六七八九十百千]+)\s*章/);
-    if (!m) return 0;
-    const raw = m[1];
-    if (/^\d+$/.test(raw)) return parseInt(raw, 10);
-    return chineseToNumber(raw);
-}
-
-function chineseToNumber(s) {
-    const map = { '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9 };
-    let result = 0, unit = 1, tmp = 0;
-    for (let i = s.length - 1; i >= 0; i--) {
-        const c = s[i];
-        if (c === '十') { tmp = tmp || 1; result += tmp * 10 * unit; tmp = 0; }
-        else if (c === '百') { tmp = tmp || 1; result += tmp * 100 * unit; tmp = 0; }
-        else if (c === '千') { tmp = tmp || 1; result += tmp * 1000 * unit; tmp = 0; }
-        else if (map[c] != null) { tmp = map[c]; }
-    }
-    result += tmp * unit;
-    return result > 0 ? result : 0;
-}
-
 function output(result) {
     process.stdout.write(JSON.stringify(result) + '\n');
     process.exit(result.success ? 0 : 1);
@@ -146,350 +88,6 @@ function fail(errMsg) {
 }
 
 // ======================== 主流程 ========================
-
-
-// ======================== action: get_platform_info ========================
-
-
-async function doSaveDraft(cookieStr, input) {
-    const { title, content, novelName, chapterNumber, workId } = input;
-    if (!content) { fail('missing required field: content'); return; }
-    if (!novelName) { fail('missing required field: novelName'); return; }
-    if (content.length < CONFIG.MIN_CONTENT_LENGTH) { throw new Error('content too short'); }
-    log('info', 'save_draft starting', { title, novelName, chapterNumber, contentLen: content.length });
-    const browser = await launchBrowser(); let page;
-    try {
-        page = await browser.newPage(); await page.setViewport(CONFIG.VIEWPORT);
-        await loginAndNavigate(page, cookieStr);
-        if (workId) { await enterNovelByWorkId(page, workId, novelName); } else { await findAndEnterNovel(page, novelName); }
-        await sleep(2000); await dismissPopups(page); await sleep(1000);
-        let effectiveChapterNumber = chapterNumber || 1;
-
-        // 用入参 chapterNumber + title 直接构造，不依赖 content 正则解析（格式多样，正则不可靠）
-        let cleanTitle = (title || '').replace(/^第\s*[\d一二三四五六七八九十百千]+\s*章\s*/, '').trim();
-        let fullTitle = '第' + effectiveChapterNumber + '章 ' + (cleanTitle || '未命名');
-        let cleanContent = content
-            .replace(/^#\s*第\s*[\d一二三四五六七八九十百千]+\s*章[\s\S]{0,50}?\n+/, '')
-            .replace(/^#\s+.+?\n+/, '');
-
-        await navigateToChapterEditor(page); await sleep(2000); await dismissPopups(page); await sleep(1000);
-        log('info', 'filling title/content', { fullTitle, contentLen: cleanContent.length });
-
-        await fillChapterNumber(page, effectiveChapterNumber);
-        await fillTitle(page, cleanTitle);
-        await fillContent(page, cleanContent);
-        await sleep(1000);
-        await takeScreenshot(page, 'fanqie_save_draft_before');
-        const st = await dumpPageState(page, 'before save draft click');
-        log('info', 'page state before save draft', st);
-        await clickButton(page, ['存草稿', '保存草稿']);
-        await sleep(3000);
-        log('info', 'save draft success', { title: fullTitle });
-        const itemId = extractItemIdFromURL(page.url());
-        const result = { success: true, action: 'save_draft' };
-        if (itemId) {
-            result.draftItemId = itemId;
-            log('info', 'itemId captured from page URL', { itemId });
-        }
-        return result;
-    } finally { await browser.close().catch(() => {}); _globalBrowser = null; log('info', 'browser closed'); }
-}
-
-
-async function fetchDraftListViaAPI(page, workId) {
-    try {
-        const msToken = await getMsToken(page);
-        const raw = await page.evaluate(async (bookId, token) => {
-            let url = `https://fanqienovel.com/api/author/chapter/draft_list/v1?book_id=${bookId}&page_index=0&page_count=50`;
-            if (token) url += '&msToken=' + encodeURIComponent(token);
-            const resp = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json' } });
-            const data = await resp.json();
-            return { code: data.code, message: data.message, list: data.data?.draft_list || [] };
-        }, workId, msToken);
-        log('info', 'draft_list API response', { workId, code: raw.code, message: raw.message, draftCount: raw.list.length });
-        if (raw.code === 0 && raw.list.length > 0) {
-            const drafts = raw.list.map(d => ({ title: d.title || '', chapterNumber: parseChapterNumber(d), itemId: d.item_id || '' }));
-            log('info', 'drafts via API', { count: drafts.length });
-            return drafts;
-        }
-        log('info', 'drafts via API', { count: 0 });
-        return [];
-    } catch (e) { log('warn', 'fetchDraftListViaAPI error', { error: e.message }); return []; }
-}
-
-async function fetchChapterListViaAPI(page, workId) {
-    try {
-        const msToken = await getMsToken(page);
-        const chapters = []; let lastPublished = null;
-        for (let pageIdx = 0; pageIdx < 10; pageIdx++) {
-            const raw = await page.evaluate(async (bookId, pgIdx, token) => {
-                let url = `https://fanqienovel.com/api/author/chapter/chapter_list/v1?book_id=${bookId}&page_index=${pgIdx}&page_count=50&status=0`;
-                if (token) url += '&msToken=' + encodeURIComponent(token);
-                const resp = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json' } });
-                const data = await resp.json();
-                return { code: data.code, message: data.message, list: data.data?.item_list || [] };
-            }, workId, pageIdx, msToken);
-            if (pageIdx === 0) log('info', 'chapter_list API response', { workId, pageIdx, code: raw.code, count: raw.list.length });
-            if (raw.code !== 0 || raw.list.length === 0) break;
-            for (const c of raw.list) { const ch = { chapterNumber: parseChapterNumber(c), title: c.title || '', isPublished: true }; chapters.push(ch); lastPublished = { chapterNumber: ch.chapterNumber, title: ch.title }; }
-        }
-        return { chapters, lastPublished };
-    } catch (e) { log('warn', 'fetchChapterListViaAPI error', { error: e.message }); return { chapters: [], lastPublished: null }; }
-}
-
-async function fetchVolumeListViaAPI(page, workId) {
-    try {
-        const msToken = await getMsToken(page);
-        const raw = await page.evaluate(async (bookId, token) => {
-            let url = `https://fanqienovel.com/api/author/volume/volume_list/v1?book_id=${bookId}`;
-            if (token) url += '&msToken=' + encodeURIComponent(token);
-            const resp = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json' } });
-            const data = await resp.json();
-            return { code: data.code, message: data.message, list: data.data?.volume_list || [] };
-        }, workId, msToken);
-        if (raw.code === 0 && raw.list.length > 0) return raw.list.map(v => ({ volumeName: v.volume_name || v.title || '', volumeId: v.volume_id || '' }));
-        return [];
-    } catch (e) { log('warn', 'fetchVolumeListViaAPI error', { error: e.message }); return []; }
-}
-
-
-async function doGetPlatformInfo(cookieStr, input) {
-    const { novelName, workId } = input;
-    if (!novelName) { fail('missing required field: novelName'); return; }
-    log('info', 'get_platform_info starting', { novelName });
-    const browser = await launchBrowser(); let page;
-    try {
-        page = await browser.newPage(); await page.setViewport(CONFIG.VIEWPORT);
-        await loginAndNavigate(page, cookieStr);
-        let newlyCreated = false;
-        if (input.workId) { await enterNovelByWorkId(page, input.workId, novelName); } else { newlyCreated = await findAndEnterNovel(page, novelName); }
-        await sleep(3000); await dismissPopups(page); await sleep(1000);
-        let wkId = await getWorkId(page);
-        if (!wkId) {
-            await clickButton(page, ['作品管理', '我的作品', '作品']); await sleep(2000);
-            wkId = await page.evaluate((name) => {
-                const rows = document.querySelectorAll('tr, li, div[class*="row"], div[class*="item"], div[class*="card"]');
-                for (const row of rows) { if (row.textContent && row.textContent.includes(name)) { const links = row.querySelectorAll('a[href*="/writer/"]'); for (const link of links) { const m = (link.getAttribute('href') || '').match(/writer\/(\d+)/); if (m) return m[1]; } } }
-                return null;
-            }, novelName);
-            if (wkId) { await clickChapterManagement(page, novelName); await sleep(2000); }
-        }
-        log('info', 'workId extracted', { workId: wkId });
-        let bookName = await page.evaluate(() => {
-            const m = window.location.href.match(/chapter-manage\/\d+&([^?]+)/);
-            return m ? decodeURIComponent(m[1]) : null;
-        }) || novelName;
-        let chapterData = { chapters: [], lastPublished: null }; let volumeData = []; let drafts = [];
-        if (wkId) {
-            if (typeof fetchChapterListViaAPI === 'function') { chapterData = await fetchChapterListViaAPI(page, wkId); log('info', 'published chapters via API', { count: chapterData.chapters ? chapterData.chapters.length : 0 }); }
-            if (typeof fetchVolumeListViaAPI === 'function') { volumeData = await fetchVolumeListViaAPI(page, wkId); log('info', 'volumes via API', { count: volumeData.length }); }
-            if (typeof fetchDraftListViaAPI === 'function') { drafts = await fetchDraftListViaAPI(page, wkId); log('info', 'drafts via API', { count: drafts.length }); }
-        }
-        if (newlyCreated) {
-            return { success: true, action: 'get_platform_info', workId: wkId, newlyCreated: true, bookName: bookName, msToken: '', drafts: [], publishedChapters: [], lastPublished: null, volumes: volumeData };
-        }
-        if (chapterData.chapters.length === 0) {
-            if (typeof extractChapterListFromPage === 'function') { chapterData = await extractChapterListFromPage(page); log('info', 'published chapters via DOM (fallback)', { count: chapterData.chapters.length }); }
-        }
-        if (volumeData.length === 0) {
-            if (typeof extractVolumeList === 'function') { volumeData = await extractVolumeList(page); log('info', 'volumes via DOM (fallback)', { count: volumeData.length }); }
-        }
-        if (drafts.length === 0) {
-            await clickButton(page, ['草稿箱', '草稿', '草稿管理', '我的草稿']); await sleep(3000); await dismissPopups(page); await sleep(1000);
-            await takeScreenshot(page, 'fanqie_platform_info_draft_page');
-            if (typeof extractDraftListFromPage === 'function') { drafts = await extractDraftListFromPage(page); log('info', 'drafts via DOM (fallback)', { count: drafts.length }); }
-        }
-        const platformMsToken = await getMsToken(page);
-        return { success: true, action: 'get_platform_info', workId: wkId, newlyCreated: newlyCreated, bookName: bookName, msToken: platformMsToken, drafts, publishedChapters: chapterData.chapters || [], lastPublished: chapterData.lastPublished || null, volumes: volumeData };
-    } finally { await browser.close().catch(() => {}); _globalBrowser = null; log('info', 'browser closed'); }
-}
-
-// ======================== action: set_book_info ========================
-
-async function doSetBookInfo(cookieStr, input) {
-    const { name, description, category, coverBase64, workId, roles } = input;
-    if (!name) { fail('missing required field: name'); return; }
-    if (!coverBase64) { fail('missing required field: coverBase64'); return; }
-    log('info', 'set_book_info starting', { name, category, workId });
-    const browser = await launchBrowser(); let page;
-    try {
-        page = await browser.newPage(); await page.setViewport(CONFIG.VIEWPORT);
-        await loginAndNavigate(page, cookieStr);
-        await sleep(3000); await dismissPopups(page); await sleep(1000);
-        const picURI = await page.evaluate(async (params) => {
-            const bstr = atob(params.coverBase64);
-            const bytes = new Uint8Array(bstr.length);
-            for (let i = 0; i < bstr.length; i++) bytes[i] = bstr.charCodeAt(i);
-            const blob = new Blob([bytes], { type: 'image/png' });
-            const fd = new FormData();
-            fd.append('upfile', blob, 'cover.png');
-
-            const uResp = await fetch('https://fanqienovel.com/api/author/data/upload_pic_v1/v0', {
-                method: 'POST', body: fd, credentials: 'include',
-                headers: { 'Accept': 'application/json' }
-            });
-            const uData = await uResp.json();
-            if (uData.code !== 0) throw new Error('upload_pic failed: code=' + uData.code + ' msg=' + (uData.message || '') + ' resp=' + JSON.stringify(uData));
-            if (!uData.data || !uData.data.pic_uri) throw new Error('upload_pic missing pic_uri, resp=' + JSON.stringify(uData));
-
-            const mBody = {
-                aid: 2503,
-                app_name: 'muye_novel',
-                book_id: params.workId,
-                book_name: params.name,
-                thumb_uri: uData.data.pic_uri,
-                abstract: params.description || '',
-                gift_word: '',
-                roles: params.roles ? JSON.stringify(params.roles.split(',').map(s => s.trim()).filter(Boolean)) : '',
-                gender: 2,
-                is_self_pic: 1,
-            };
-            const mFormBody = new URLSearchParams();
-            for (const [k, v] of Object.entries(mBody)) { mFormBody.append(k, String(v)); }
-            const mResp = await fetch('https://fanqienovel.com/api/author/book/modify_book/v0', {
-                method: 'POST', credentials: 'include',
-                headers: { 'Accept': 'application/json' },
-                body: mFormBody
-            });
-            const mData = await mResp.json();
-            if (mData.code !== 0) throw new Error('modify_book failed: code=' + mData.code + ' msg=' + (mData.message || '') + ' contentType=form-urlencoded req=' + mFormBody.toString() + ' resp=' + JSON.stringify(mData));
-            return uData.data.pic_uri;
-        }, { name, description: (description || '').substring(0, 500), category: category || '', coverBase64, workId: workId || '', roles: roles || '' });
-        log('info', 'set_book_info success', { picURI });
-        return { success: true, action: 'set_book_info', picURI };
-    } finally { await browser.close().catch(() => {}); _globalBrowser = null; log('info', 'browser closed'); }
-}
-
-// ======================== action: publish_draft ========================
-
-async function doPublishDraft(cookieStr, input) {
-    const { draftTitle, novelName, volumeName, workId } = input;
-    const itemId = input.itemId || input.draftItemId || '';
-    if (!draftTitle) {
-        log('warn', 'draftTitle is empty');
-    }
-    if (!draftTitle && !itemId) {
-        fail('missing required field: both draftTitle and itemId are empty');
-        return;
-    }
-    if (!novelName) { fail('missing required field: novelName'); return; }
-
-    log('info', 'publish_draft starting', { draftTitle, novelName, volumeName, itemId, workId });
-
-    const browser = await launchBrowser();
-    let page;
-    try {
-        page = await browser.newPage();
-        await page.setViewport(CONFIG.VIEWPORT);
-
-        if (itemId && workId) {
-            log('info', 'navigating to draft editor via itemId', { itemId });
-            await loginAndNavigate(page, cookieStr);
-            const editUrl = CONFIG.BASE_URL + '/main/writer/' + workId + '/publish/' + itemId + '/?enter_from=modifydraft';
-            await page.goto(editUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.NAVIGATION_TIMEOUT });
-            await sleep(3000); await dismissPopups(page); await sleep(1000);
-            await takeScreenshot(page, 'fanqie_draft_editor_loaded');
-            const onEditor = await isOnEditorPage(page);
-            if (!onEditor) {
-                log('warn', 'draft editor not loaded via itemId, falling back to title match');
-                await page.goto(CONFIG.WRITER_URL, { waitUntil: 'domcontentloaded', timeout: CONFIG.NAVIGATION_TIMEOUT });
-                await sleep(3000);
-                if (input.workId) { await enterNovelByWorkId(page, input.workId, novelName); }
-                await sleep(2000); await dismissPopups(page); await sleep(1000);
-                await clickButton(page, ['草稿箱', '草稿', '草稿管理', '我的草稿']);
-                await sleep(3000); await dismissPopups(page); await sleep(1000);
-                await takeScreenshot(page, 'fanqie_draft_list');
-                const found = await clickDraftByTitle(page, draftTitle);
-                if (!found) { await takeScreenshot(page, 'fanqie_draft_not_found'); throw new Error('在草稿箱中找不到标题为 "' + draftTitle + '" 的草稿'); }
-            }
-        } else {
-            await loginAndNavigate(page, cookieStr);
-            if (input.workId) { await enterNovelByWorkId(page, input.workId, novelName); } else { await findAndEnterNovel(page, novelName); }
-            await sleep(2000); await dismissPopups(page); await sleep(1000);
-            await clickButton(page, ['草稿箱', '草稿', '草稿管理', '我的草稿']);
-            await sleep(3000); await dismissPopups(page); await sleep(1000);
-            await takeScreenshot(page, 'fanqie_draft_list');
-            const found = await clickDraftByTitle(page, draftTitle);
-            if (!found) { await takeScreenshot(page, 'fanqie_draft_not_found'); throw new Error('在草稿箱中找不到标题为 "' + draftTitle + '" 的草稿'); }
-        }
-
-        await sleep(6000);
-        await dismissPopups(page); await sleep(1000);
-        await takeScreenshot(page, 'fanqie_draft_editor_loaded');
-        const onEditor2 = await isOnEditorPage(page);
-        if (!onEditor2) { log('warn', 'draft editor not loaded, retrying wait'); await sleep(15000); await dismissPopups(page); }
-
-        const capturedItemId = await page.evaluate(() => {
-            const m = window.location.href.match(/\/publish\/(\d+)/);
-            return m ? m[1] : '';
-        });
-
-        log('info', 'page state before clicking 下一步', { label: 'before draft publish click', ...(await dumpPageState(page, 'draft_editor')) });
-        log('info', 'clicking 下一步 from draft editor');
-        await clickButton(page, ['下一步']); await sleep(2000);
-
-        const afterNextModal = await handlePublishConfirmModal(page);
-        if (afterNextModal) { log('info', 'publish confirm modal handled after next step'); await sleep(2000); }
-
-        await handleContentDetectionDialog(page); await sleep(1000);
-        const typoHandled = await handleTypoCheckAndNext(page);
-        if (!typoHandled) { await sleep(1000); await clickButton(page, ['下一步']); await sleep(2000); }
-
-        log('info', 'handling publish settings page');
-        await handlePublishSettings(page, volumeName); await sleep(2000);
-
-        try {
-            const handled = await page.evaluate(() => {
-                const modalEls = document.querySelectorAll('[class*="modal"], [class*="dialog"], [class*="popup"], [class*="drawer"], [class*="overlay"], [role="dialog"], [role="alertdialog"]');
-                for (const modal of modalEls) { if (modal.offsetParent === null) continue; const btns = modal.querySelectorAll('button'); const cts = ['确定','确认','提交','发布','我知道了','知道了','好的','是','确认发布','确定提交','立即发布','继续','下一步']; for (const btn of btns) { if (btn.offsetParent === null || btn.disabled) continue; const t = (btn.textContent || '').trim(); if (cts.some(ct => t === ct || t.includes(ct))) { btn.click(); return 'clicked:' + t; } } const nonCancelBtns = Array.from(btns).filter(b => { if (b.offsetParent === null || b.disabled) return false; const t = (b.textContent || '').trim(); return !['取消','关闭','×','x','X'].includes(t); }); if (nonCancelBtns.length > 0) { nonCancelBtns[nonCancelBtns.length - 1].click(); return 'fallback_clicked:' + nonCancelBtns[nonCancelBtns.length - 1].textContent.trim(); } }
-                return null;
-            });
-            if (handled) { log('info', 'generic popup handled', { action: handled }); await sleep(2000); }
-        } catch (e) {}
-
-        log('info', 'entering simplified publish submit loop');
-        let publishSuccessConfirmed = false;
-        for (let submitAttempt = 0; submitAttempt < 12; submitAttempt++) {
-            log('info', 'submit loop iteration', { attempt: submitAttempt });
-            try { const state = await dumpPageState(page, 'submit_loop'); log('info', 'page state', { url: state.url, bodyPreview: state.bodyPreview, visibleBtns: state.visibleBtns }); } catch (e) {}
-            try { const sc = await page.evaluate(() => { const txt = document.body.innerText; if (txt.includes('发布成功') || txt.includes('成功发布') || txt.includes('已发布') || txt.includes('审核中')) return 'text'; const url = window.location.href; if (url.includes('/chapter-manage/') || url.includes('/chapter/') || url.includes('chapter_id=') || url.includes('chapter-manage')) return 'url_chapter'; if (!url.includes('/publish/')) return 'url_left_publish'; return null; }); if (sc) { log('info', 'publish success confirmed', { indicator: sc }); publishSuccessConfirmed = true; break; } } catch (e) {}
-            try { const dl = await checkDailyLimit(page); if (dl) { await takeScreenshot(page, 'fanqie_daily_limit'); fail(dl, 'DAILY_LIMIT'); return; } } catch (e) {}
-            try { const mhResult = await page.evaluate(() => { const dialogTexts = ['发布提示','是否确定提交','确认发布','确定发布']; const allSpans = document.querySelectorAll('span, div, p'); for (const el of allSpans) { const t = el.textContent.trim(); for (const dt of dialogTexts) { if (t.includes(dt) && el.offsetParent !== null) { const ancestorChain = []; let p = el; while (p && p !== document.body) { ancestorChain.push(p.tagName + (p.className && typeof p.className === 'string' ? '.' + p.className.split(' ').filter(c => c).join('.') : '') + (p.id ? '#' + p.id : '')); p = p.parentElement; } const container = el.closest('div[class*="modal"], div[class*="dialog"], div[class*="drawer"], div[class*="overlay"]') || document.body; const btns = container.querySelectorAll('button'); for (const btn of btns) { if (btn.offsetParent === null || btn.disabled) continue; const bt = btn.textContent.trim(); if (['确认发布','确认提交','确认','确定','确定提交','提交','发布','我知道了','知道了'].some(s => bt.includes(s))) { btn.click(); return { action: 'clicked:' + bt, chain: ancestorChain, containerTag: container.tagName + (container.className && typeof container.className === 'string' ? '.' + container.className.split(' ').filter(c => c).join('.') : ''), matchedText: dt }; } } return { chain: ancestorChain, matchedText: dt, containerTag: container.tagName + (container.className && typeof container.className === 'string' ? '.' + container.className.split(' ').filter(c => c).join('.') : ''), noButton: true }; } } } return null; }); if (mhResult) { log('info', 'publish confirm modal handled', { action: mhResult.action || 'no_button', chain: mhResult.chain, containerTag: mhResult.containerTag, matchedText: mhResult.matchedText }); if (mhResult.action) { await sleep(4000); continue; } } } catch (e) {}
-            try { const sc2 = await page.evaluate(() => { const allEls = document.querySelectorAll('button, a, span[class*="btn"], div[class*="btn"]'); for (const btn of allEls) { if (btn.offsetParent === null || btn.disabled) continue; const t = btn.textContent.trim(); if (t === '确认发布' || t === '提交' || t === '发布') { btn.click(); return t; } } return null; }); if (sc2) { log('info', 'publish submit clicked', { action: sc2, attempt: submitAttempt }); await sleep(4000); continue; } } catch (e) {}
-            let clicked = await page.evaluate(() => { const allEls = document.querySelectorAll('button, a, span[class*="btn"], div[class*="btn"]'); const isInModal = (el) => { let p = el; while (p) { if (p.className && typeof p.className === 'string' && /modal|dialog|popup|drawer|overlay/.test(p.className)) return true; p = p.parentElement; } return false; }; for (const btn of allEls) { if (btn.offsetParent === null || btn.disabled) continue; const t = btn.textContent.trim(); if ((t === '确定' || t === '知道了') && isInModal(btn)) { btn.click(); return 'modal:' + t; } } for (const btn of allEls) { if (btn.offsetParent === null || btn.disabled) continue; const t = btn.textContent.trim(); if (t === '忽略全部') { btn.click(); return t; } } for (const btn of allEls) { if (btn.offsetParent === null || btn.disabled) continue; const t = btn.textContent.trim(); if (t === '下一步') { btn.click(); return '下一步'; } } for (const btn of allEls) { if (btn.offsetParent === null || btn.disabled) continue; const t = btn.textContent.trim(); if (t === '确定' || t === '知道了') { btn.click(); return t; } } return null; });
-            if (!clicked) { try { const fnd = await page.evaluate(() => { const xpath = "//button[text()='提交']"; const el = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; if (el) { el.click(); return 'xpath_提交'; } return null; }); if (fnd) clicked = fnd; } catch (e) {} }
-            if (clicked) { log('info', 'publish step clicked', { action: clicked, attempt: submitAttempt }); } else { log('warn', 'no publish button found at step', { attempt: submitAttempt }); }
-            await sleep(3000);
-        }
-
-        if (!publishSuccessConfirmed) { await takeScreenshot(page, 'fanqie_publish_fail'); throw new Error('发布失败：未检测到发布成功标识'); }
-
-        let postId = itemId || capturedItemId;
-        const isPublished = await page.evaluate(() => {
-            return window.location.href.includes('/chapter-manage/');
-        });
-        if (!isPublished) {
-            await takeScreenshot(page, 'fanqie_publish_fail'); throw new Error('发布失败：未跳转到章节管理页面');
-        }
-        if (!postId) {
-            postId = await getChapterIdFromURL(page);
-            if (!postId) { await takeScreenshot(page, 'fanqie_publish_fail'); throw new Error('发布失败：无法提取章节ID'); }
-        }
-
-        log('info', 'chapter published', { postId, workId, novelName });
-        return { success: true, postId };
-    } finally {
-        await browser.close().catch(() => {}); _globalBrowser = null; log('info', 'browser closed');
-    }
-}
-
-
-function getMsToken(page) {
-    return page.evaluate(() => {
-        const m = document.cookie.match(/msToken=([^;]+)/);
-        return m ? decodeURIComponent(m[1]) : '';
-    });
-}
 
 async function main() {
     // 1. 解析入参（支持两种模式）
@@ -516,10 +114,12 @@ async function main() {
         }
     }
 
-    setLogPrefix(input.novelName || input.title || '');
+    const { title, content, novelName, volumeName, chapterNumber } = input;
+    if (!title)      { fail('missing required field: title'); return; }
+    if (!content)    { fail('missing required field: content'); return; }
+    if (!novelName)  { fail('missing required field: novelName'); return; }
 
-    const action = input.action || 'publish';
-    log('info', 'action selected', { action });
+    log('info', 'input parsed', { title, novelName, contentLen: content.length });
 
     // 2. 读取 Cookie
     const cookieStr = process.env.FANQIE_COOKIE;
@@ -529,7 +129,7 @@ async function main() {
     }
     log('info', 'cookie loaded', { cookieLen: cookieStr.length });
 
-    // 3. 执行操作（支持重试）
+    // 3. 执行发布（支持重试）
     let lastError = null;
     for (let attempt = 0; attempt <= CONFIG.MAX_RETRIES; attempt++) {
         if (attempt > 0) {
@@ -537,25 +137,7 @@ async function main() {
             await sleep(2000);
         }
         try {
-            let result;
-            switch (action) {
-                case 'save_draft':
-                    result = await doSaveDraft(cookieStr, input);
-                    break;
-                case 'publish_draft':
-                    result = await doPublishDraft(cookieStr, input);
-                    break;
-                case 'get_platform_info':
-                    result = await doGetPlatformInfo(cookieStr, input);
-                    break;
-                case 'set_book_info':
-                    result = await doSetBookInfo(cookieStr, input);
-                    break;
-                case 'publish':
-                default:
-                    result = await publishWithTimeout(cookieStr, input);
-                    break;
-            }
+            const result = await publishWithTimeout(cookieStr, input);
             log('info', 'publish success', result);
             output(result);
             return;
@@ -568,6 +150,7 @@ async function main() {
     fail(lastError ? lastError.message : 'unknown error after retries');
 }
 
+let _globalBrowser = null; // 用于超时强制清理
 
 function publishWithTimeout(cookieStr, input) {
     return new Promise((resolve, reject) => {
@@ -760,20 +343,14 @@ async function doPublish(cookieStr, input) {
         }
 
         // === 5. 填写章节内容 ===
-
-        log('info', 'filling chapter title', { title, chapterNumber: effectiveChapterNumber });
-
-        let cleanTitle = (title || '').replace(/^第\s*[\d一二三四五六七八九十百千]+\s*章\s*/, '').trim();
-        let fullTitle = '第' + effectiveChapterNumber + '章 ' + (cleanTitle || '未命名');
-        let cleanContent = content
-            .replace(/^#\s*第\s*[\d一二三四五六七八九十百千]+\s*章[\s\S]{0,50}?\n+/, '')
-            .replace(/^#\s+.+?\n+/, '');
-
+        log('info', 'filling chapter number', { chapterNumber: effectiveChapterNumber });
         await fillChapterNumber(page, effectiveChapterNumber);
-        await fillTitle(page, cleanTitle);
 
-        log('info', 'filling chapter content', { contentLen: cleanContent.length });
-        await fillContent(page, cleanContent);
+        log('info', 'filling chapter title', { title });
+        await fillTitle(page, title);
+
+        log('info', 'filling chapter content', { contentLen: content.length });
+        await fillContent(page, content);
         await sleep(1000);
 
         // === 6. 调试：保存页面截图（仅 viewport，不做全页截取避免卡顿） ===
@@ -820,43 +397,7 @@ async function doPublish(cookieStr, input) {
         await handlePublishSettings(page);
         await sleep(2000);
 
-            // === 9.5 通用弹窗兜底：扫描页面上所有可见弹窗，盲点确认按钮 ===
-            try {
-                const handled = await page.evaluate(() => {
-                    // 查找所有可见的弹窗/对话框/浮层
-                    const modalEls = document.querySelectorAll('[class*="modal"], [class*="dialog"], [class*="popup"], [class*="drawer"], [class*="overlay"], [role="dialog"], [role="alertdialog"]');
-                    for (const modal of modalEls) {
-                        if (modal.offsetParent === null) continue;
-                        const btns = modal.querySelectorAll('button');
-                        const confirmTexts = ['确定', '确认', '提交', '发布', '我知道了', '知道了', '好的', '是', '确认发布', '确定提交', '立即发布', '继续', '下一步'];
-                        for (const btn of btns) {
-                            if (btn.offsetParent === null || btn.disabled) continue;
-                            const t = (btn.textContent || '').trim();
-                            if (confirmTexts.some(ct => t === ct || t.includes(ct))) {
-                                btn.click();
-                                return 'clicked:' + t;
-                            }
-                        }
-                        // 兜底：点弹窗里最后一个非取消按钮
-                        const nonCancelBtns = Array.from(btns).filter(b => {
-                            if (b.offsetParent === null || b.disabled) return false;
-                            const t = (b.textContent || '').trim();
-                            return !['取消', '关闭', '×', 'x', 'X'].includes(t);
-                        });
-                        if (nonCancelBtns.length > 0) {
-                            nonCancelBtns[nonCancelBtns.length - 1].click();
-                            return 'fallback_clicked:' + nonCancelBtns[nonCancelBtns.length - 1].textContent.trim();
-                        }
-                    }
-                    return null;
-                });
-                if (handled) {
-                    log('info', 'generic popup handled', { action: handled });
-                    await sleep(2000);
-                }
-            } catch (e) {}
-
-            // === 9. 简化发布提交流程：不断点击当前页面可见的「下一步」或「确认发布」按钮 ===
+        // === 9. 简化发布提交流程：不断点击当前页面可见的「下一步」或「确认发布」按钮 ===
         // DEBUG: screenshot and dump buttons before submit loop
         try {
             const preSubmit = await page.evaluate(() => ({
@@ -870,19 +411,6 @@ async function doPublish(cookieStr, input) {
         let publishSuccessConfirmed = false;
         const maxSubmitAttempts = 12;
         for (let submitAttempt = 0; submitAttempt < maxSubmitAttempts; submitAttempt++) {
-            log('info', 'submit loop iteration', { attempt: submitAttempt });
-
-            // DEBUG: dump page state
-            try {
-                const state = await page.evaluate(() => ({
-                    url: window.location.href,
-                    bodyText: (document.body.innerText || '').substring(0, 200),
-                    visibleBtns: Array.from(document.querySelectorAll('button')).filter(b => b.offsetParent !== null && !b.disabled).map(b => b.textContent.trim()).filter(t => t.length > 0 && t.length < 25),
-                    modals: Array.from(document.querySelectorAll('[class*="modal"], [class*="dialog"], [class*="popup"]')).filter(m => m.offsetParent !== null).map(m => m.textContent.trim().substring(0, 60)),
-                }));
-                log('info', 'page state', { url: state.url, bodyPreview: state.bodyText, visibleBtns: state.visibleBtns, modalCount: state.modals.length });
-            } catch (e) {}
-
             // Check for success first
             try {
                 const successCheck = await page.evaluate(() => {
@@ -911,9 +439,8 @@ async function doPublish(cookieStr, input) {
                                 const container = el.closest('div[class*="modal"], div[class*="dialog"], div[class*="drawer"]') || document.body;
                                 const btns = container.querySelectorAll('button');
                                 for (const btn of btns) {
-                                    if (btn.offsetParent === null || btn.disabled) continue;
                                     const bt = btn.textContent.trim();
-                                    if (['确认发布', '确认提交', '确认', '确定', '确定提交', '提交', '发布', '我知道了', '知道了'].some(s => bt.includes(s))) {
+                                    if (['确认发布', '确认', '确定', '提交', '确定提交'].includes(bt) && btn.offsetParent !== null) {
                                         btn.click();
                                         return 'clicked:' + bt;
                                     }
@@ -931,25 +458,17 @@ async function doPublish(cookieStr, input) {
             } catch (e) {}
 
             // Click the best available button
-            // Priority: 忽略全部（错别字） → 下一步 → 提交/确认发布/发布
-            // "忽略全部" must be first to clear the typo modal, otherwise "提交/确认发布"
-            // inside the typo confirmation popup gets clicked in a loop and never progresses.
             let clicked = await page.evaluate(() => {
-                const allEls = document.querySelectorAll('button, a, span[class*="btn"], div[class*="btn"]');
-                for (const btn of allEls) {
-                    if (btn.offsetParent === null || btn.disabled) continue;
-                    const t = btn.textContent.trim();
-                    if (t === '忽略全部') { btn.click(); return t; }
-                }
-                for (const btn of allEls) {
-                    if (btn.offsetParent === null || btn.disabled) continue;
-                    const t = btn.textContent.trim();
-                    if (t === '下一步') { btn.click(); return '下一步'; }
-                }
-                for (const btn of allEls) {
+                const btns = document.querySelectorAll('button');
+                for (const btn of btns) {
                     if (btn.offsetParent === null || btn.disabled) continue;
                     const t = btn.textContent.trim();
                     if (t === '提交' || t === '确认发布' || t === '发布') { btn.click(); return t; }
+                }
+                for (const btn of btns) {
+                    if (btn.offsetParent === null || btn.disabled) continue;
+                    const t = btn.textContent.trim();
+                    if (t === '下一步') { btn.click(); return '下一步'; }
                 }
                 return null;
             });
@@ -1032,156 +551,6 @@ async function checkLogin(page) {
     }
 }
 
-// ======================== 组合导航函数 ========================
-
-/**
- * 注入 cookie 并导航到作家专区，确认已登录。
- * 组合了 parseCookieString + page.goto + checkLogin。
- */
-async function loginAndNavigate(page, cookieStr) {
-    log('info', 'setting cookies and navigating to writer');
-    const cookies = parseCookieString(cookieStr, CONFIG.BASE_URL);
-    await page.setCookie(...cookies);
-    await page.goto(CONFIG.WRITER_URL, { waitUntil: 'domcontentloaded', timeout: CONFIG.NAVIGATION_TIMEOUT });
-    await sleep(5000);
-
-    const loggedIn = await checkLogin(page);
-    if (!loggedIn) {
-        throw new Error('login failed: cookie may be expired, page redirected to login');
-    }
-    log('info', 'login confirmed');
-}
-
-/**
- * 按作品名查找并进入章节管理页面。
- * 组合了 findNovelByName + clickChapterManagement，找不到则新建作品。
- */
-async function findAndEnterNovel(page, novelName) {
-    let foundNovel = await findNovelByName(page, novelName);
-    if (foundNovel) {
-        log('info', 'novel found, entering chapter management', { novelName });
-        await clickChapterManagement(page, novelName);
-        return false;
-    }
-
-    log('info', 'novel not found, creating new via direct URL', { novelName });
-
-    await page.goto('https://fanqienovel.com/main/writer/create', { waitUntil: 'domcontentloaded', timeout: CONFIG.NAVIGATION_TIMEOUT });
-    await sleep(5000);
-
-    page.setDefaultTimeout(60000);
-
-    try {
-        await page.waitForFunction(() => {
-            const el = document.querySelector('input[placeholder*="作品名称"]');
-            return el && el.offsetParent !== null;
-        }, { timeout: 60000 });
-    } catch (e) {
-        log('warn', 'create form not ready after 60s, continuing anyway');
-    }
-
-    await dismissWelcomeModal(page);
-
-    let createdWorkId = await createNovelViaForm(page, novelName);
-
-    const altNames = [novelName + '之续', novelName + '新篇'];
-    let altIdx = 0;
-    while (!createdWorkId && altIdx < altNames.length) {
-        const altName = altNames[altIdx];
-        altIdx++;
-        log('info', 'retrying novel creation with alt name', { altName });
-        await page.goto('https://fanqienovel.com/main/writer/create', { waitUntil: 'domcontentloaded', timeout: CONFIG.NAVIGATION_TIMEOUT });
-        await sleep(3000);
-        await dismissWelcomeModal(page);
-        await createNovelViaForm(page, altName);
-        createdWorkId = await getWorkId(page);
-        if (createdWorkId) {
-            log('info', 'novel created with alt name', { altName, workId: createdWorkId });
-            break;
-        }
-    }
-
-    if (createdWorkId) {
-        log('info', 'novel created successfully', { novelName, workId: createdWorkId });
-    } else {
-        log('warn', 'novel creation verification failed, searching for novel');
-        await page.goto('https://fanqienovel.com/main/writer/', { waitUntil: 'domcontentloaded', timeout: CONFIG.NAVIGATION_TIMEOUT });
-        await sleep(3000);
-        await dismissWelcomeModal(page);
-        await clickButton(page, ['作品管理']);
-        await sleep(2000);
-        foundNovel = await findNovelByName(page, novelName);
-        if (foundNovel) {
-            log('info', 'novel found after creation, using existing', { novelName });
-            await clickChapterManagement(page, novelName);
-        } else {
-            throw new Error('无法创建或找到作品: ' + novelName);
-        }
-    }
-    return true;
-}
-
-/**
- * 从当前页面 URL 中提取作品 ID (workId)。
- */
-async function getWorkId(page) {
-    return page.evaluate(() => {
-        const m = window.location.href.match(/writer\/(\d+)/);
-        return m ? m[1] : null;
-    });
-}
-
-/**
- * 保存截图到 /tmp/logs/，用于调试。
- */
-async function takeScreenshot(page, name) {
-    try {
-        const path = '/tmp/logs/' + name + '_' + Date.now() + '.png';
-        await page.screenshot({ path, fullPage: false });
-        log('info', 'screenshot saved', { path });
-    } catch (e) {
-        log('warn', 'screenshot failed', { name, error: e.message });
-    }
-}
-
-/**
- * 获取当前页面状态摘要，用于日志记录。
- */
-async function dumpPageState(page, label) {
-    try {
-        return await page.evaluate((lbl) => {
-            const bodyPreview = (document.body ? document.body.innerText : '').substring(0, 200);
-            const visibleBtns = Array.from(document.querySelectorAll('button, a[class*="btn"], span[class*="btn"]'))
-                .filter(el => el.offsetParent !== null)
-                .map(el => (el.textContent || '').trim())
-                .filter(t => t.length > 0 && t.length < 15)
-                .slice(0, 15);
-            return { label: lbl, url: window.location.href, bodyPreview, visibleBtns };
-        }, label);
-    } catch (e) {
-        return { label, url: '', bodyPreview: '', visibleBtns: [], error: e.message };
-    }
-}
-
-/**
- * 检查番茄平台是否触发了每日发布上限。
- */
-async function checkDailyLimit(page) {
-    try {
-        return await page.evaluate(() => {
-            const txt = document.body ? document.body.innerText : '';
-            if (txt.includes('已达上限') || txt.includes('今日发布次数已达') || txt.includes('发布次数已用完') ||
-                txt.includes('已达每日上限') || txt.includes('超过每日上限') || txt.includes('每日发布数量') || txt.includes('超过上限') ||
-                txt.includes('提交次数') || (txt.includes('今日发布') && txt.includes('上限'))) {
-                return true;
-            }
-            return false;
-        });
-    } catch (e) {
-        return false;
-    }
-}
-
 /**
  * 点击包含指定文字的按钮（精确匹配按钮文字）。
  * text 可以是字符串或字符串数组（依次尝试）。
@@ -1251,24 +620,6 @@ async function clickButton(page, text) {
 /**
  * 在作品列表中查找同名作品。
  */
-
-async function enterNovelByWorkId(page, workId, novelName) {
-    log('info', 'entering novel by workId', { workId });
-    await page.goto('https://fanqienovel.com/main/writer/', { waitUntil: 'domcontentloaded', timeout: CONFIG.NAVIGATION_TIMEOUT });
-    await sleep(3000);
-    await dismissPopups(page);
-    await clickButton(page, ['作品管理']);
-    await sleep(2000);
-    const foundOnPage = await findNovelByName(page, novelName);
-    if (foundOnPage) {
-        await clickChapterManagement(page, novelName);
-        return true;
-    }
-    await clickButton(page, ['作品管理']);
-    await sleep(2000);
-    return true;
-}
-
 async function findNovelByName(page, novelName) {
     try {
         const found = await page.evaluate((name) => {
@@ -1696,56 +1047,6 @@ async function fillContent(page, content) {
  * "新建章节" 按钮被包裹在 target=_blank 的 <a> 标签中，不能直接点击，
  * 需要提取 href 后直接跳转。
  */
-
-async function clickDraftByTitle(page, draftTitle) {
-    const normalize = (s) => s.replace(/[\s\u200B\u00A0]+/g, ' ').trim();
-    const chMatch = draftTitle.match(/第\s*([\d一二三四五六七八九十百千]+)\s*章/);
-    const chNum = chMatch ? chMatch[1] : '';
-
-    const markEditBtn = "function(r) { const row = r.closest('tr') || r.closest('div[class*=\"row\"]') || r.closest('div[class*=\"item\"]') || r.closest('li') || r.parentElement; if (!row) return ''; const btns = row.querySelectorAll('a, button, span, div'); for (const b of btns) { const href = b.getAttribute('href') || ''; if (href.includes('/publish/') && b.offsetParent) { return 'href|' + href; } } const iconBtns = row.querySelectorAll('span[class*=\"edit\"], span[class*=\"draft-edit\"], span[class*=\"icon-edit\"], i[class*=\"edit\"]'); for (const b of iconBtns) { if (b.offsetParent) { const href = b.parentElement.getAttribute('href') || ''; if (href.includes('/publish/')) { return 'href|' + href; } b.parentElement.setAttribute('data-publish-edit', 'true'); return 'icon_parent'; } } for (const b of btns) { if (!b.offsetParent || b.tagName === 'TH') continue; const t = (b.textContent || '').trim(); if (t === '\u7f16\u8f91' || t === '\u7ee7\u7eed\u7f16\u8f91' || t === '\u5199' || t === '\u4fee\u6539') { const href = b.getAttribute('href') || ''; if (href.includes('/publish/')) { return 'href|' + href; } b.setAttribute('data-publish-edit', 'true'); return 'text_exact'; } } for (const b of btns) { if (!b.offsetParent) continue; const inner = b.innerHTML || ''; if (inner.includes('\u270f') || inner.includes('\u270e') || inner.includes('\ud83d\udcdd') || inner.includes('pencil')) { b.parentElement.setAttribute('data-publish-edit', 'true'); return 'emoji'; } } return ''; }";
-
-    const levels = [
-        { name: 'normalized_full', desc: '\u5f52\u4e00\u5316\u5168\u6587\u5339\u914d',
-          fn: async () => page.evaluate((target, normFnText, markFn) => {
-            const norm = eval('(' + normFnText + ')'); const mark = eval('(' + markFn + ')'); const t = norm(target);
-            const els = document.querySelectorAll('tr, li, div[class*="row"], div[class*="item"], div[class*="chapter"], a[href*="/writer/"]');
-            for (const el of els) { if (!el.offsetParent) continue; const text = norm(el.textContent || ''); if (text.includes(t)) { const tag = mark(el); return { method: 'normalized', found: text.substring(0, 80), marked: tag }; } }
-            return null;
-          }, draftTitle, normalize.toString(), markEditBtn)
-        },
-        { name: 'chapter_number', desc: '\u7ae0\u53f7\u6570\u5b57\u5750\u6807',
-          fn: async () => {
-            if (!chNum || !/^\d+$/.test(chNum)) return null;
-            return page.evaluate((num, markFn) => {
-              const mark = eval('(' + markFn + ')'); const rows = document.querySelectorAll('tr, li, div[class*="row"], div[class*="item"], div[class*="chapter"]');
-              for (const row of rows) { if (!row.offsetParent) continue; const text = (row.textContent || '').trim(); const m = text.match(/第\s*(\d+)\s*章/); if (m && m[1] === num) { const tag = mark(row); return { method: 'ch_num:' + num, found: text.substring(0, 80), marked: tag }; } }
-              return null;
-            }, chNum, markEditBtn)
-          }
-        }
-    ];
-
-    for (let attempt = 0; attempt < 5; attempt++) {
-        for (const level of levels) {
-            try {
-                const result = await level.fn();
-                if (result && result.marked) {
-                    log('info', 'draft matched: ' + level.desc, { draftTitle, attempt, ...result });
-                    if (result.marked.startsWith('href|')) {
-                        const href = result.marked.substring(5);
-                        await page.goto(CONFIG.BASE_URL + href, { waitUntil: 'domcontentloaded', timeout: CONFIG.NAVIGATION_TIMEOUT });
-                    } else {
-                        try { await page.click('[data-publish-edit="true"]'); } catch (ce) {}
-                    }
-                    return true;
-                }
-            } catch (e) { log('warn', 'draft match level failed', { level: level.name, error: e.message }); }
-        }
-        await sleep(2000);
-    }
-    return false;
-}
-
 async function navigateToChapterEditor(page) {
     try {
         // 尝试从"新建章节"链接提取 href
@@ -2253,11 +1554,6 @@ async function handleRiskDetectionDialog(page) {
 /**
  * 从页面 URL 中提取 chapter ID。
  */
-function extractItemIdFromURL(url) {
-    const m = url && url.match(/\/publish\/(\d+)/);
-    return m ? m[1] : '';
-}
-
 async function getChapterIdFromURL(page) {
     try {
         await sleep(2000);
@@ -2381,24 +1677,6 @@ async function handlePublishSettings(page) {
     // 1) 选择分卷："第一卷：默认" 或 "第一卷"
     await selectVolume(page);
 
-    // 1.1) 处理分卷选择后可能弹出的确认弹窗
-    try {
-        await page.evaluate(() => {
-            const modals = document.querySelectorAll('[class*="modal"], [class*="dialog"], [class*="popup"], [class*="drawer"], [class*="overlay"], [role="dialog"]');
-            for (const modal of modals) {
-                if (modal.offsetParent === null) continue;
-                const btns = modal.querySelectorAll('button');
-                for (const btn of btns) {
-                    if (btn.offsetParent === null || btn.disabled) continue;
-                    const t = (btn.textContent || '').trim();
-                    if (t === '确认' || t === '确定' || t === '知道了') { btn.click(); return true; }
-                }
-            }
-            return false;
-        });
-        await sleep(500);
-    } catch (e) {}
-
     // 2) AI 选项：选"否"
     await selectAIOption(page);
 
@@ -2451,13 +1729,13 @@ async function handlePublishConfirmModal(page) {
                         }
                         if (!matched) continue;
 
-                        // 按优先级点击确认按钮（子串匹配）
+                        // 按优先级点击确认按钮
                         const confirmBtns = ['提交', '确认', '确定', '确认提交', '确认发布', '发布', '知道了', '确定提交', '是'];
                         for (const label of confirmBtns) {
                             const btns = modal.querySelectorAll('button, a[class*="btn"], span[class*="btn"], div[class*="btn"]');
                             for (const btn of btns) {
                                 const t = (btn.textContent || '').trim();
-                                if (t.includes(label)) {
+                                if (t === label) {
                                     btn.click();
                                     return 'clicked:' + label;
                                 }

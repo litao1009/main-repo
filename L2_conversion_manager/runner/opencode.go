@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"clawstudios/pkg/logging"
+	"session_manager/chaterr"
 	"session_manager/models"
 )
 
@@ -53,14 +54,13 @@ func NewOpenCodeRunner(binaryPath string) *OpenCodeRunner {
 }
 
 type RunOptions struct {
-	CWD              string
-	Model            string
-	SessionID        string
-	Message          string
-	Timeout          time.Duration
-	ConfigPath       string
-	DeepseekAPIKey   string
-	WriteDraftOnText bool
+	CWD            string
+	Model          string
+	SessionID      string
+	Message        string
+	Timeout        time.Duration
+	ConfigPath     string
+	DeepseekAPIKey string
 }
 
 func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan models.SessionEvent, error) {
@@ -126,18 +126,18 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
-			w.send(models.SessionEvent{Type: "error", Error: fmt.Sprintf("stdout pipe: %v", err)})
+			w.send(models.SessionEvent{Type: "error", Error: chaterr.UserFacing(fmt.Sprintf("stdout pipe: %v", err))})
 			return
 		}
 		stderrPipe, err := cmd.StderrPipe()
 		if err != nil {
-			w.send(models.SessionEvent{Type: "error", Error: fmt.Sprintf("stderr pipe: %v", err)})
+			w.send(models.SessionEvent{Type: "error", Error: chaterr.UserFacing(fmt.Sprintf("stderr pipe: %v", err))})
 			return
 		}
 
 		if err := cmd.Start(); err != nil {
 			logger.Error(logging.ErrSessionError, "opencode start failed: cwd=%s model=%s err=%v", opts.CWD, opts.Model, err)
-			w.send(models.SessionEvent{Type: "error", Error: fmt.Sprintf("start failed: %v", err)})
+			w.send(models.SessionEvent{Type: "error", Error: chaterr.UserFacing(fmt.Sprintf("start failed: %v", err))})
 			return
 		}
 
@@ -216,14 +216,13 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 						Text:      raw.Part.Text,
 					})
 
-				case "tool_use":
-					w.send(models.SessionEvent{
-						Type:       "tool_call",
-						SessionID:  capturedSID,
-						Tool:       raw.Part.Tool,
-						ToolResult: raw.Part.State.Output,
-						DraftPath:  extractDraftPath(raw.Part.State.Input),
-					})
+			case "tool_use":
+				w.send(models.SessionEvent{
+					Type:       "tool_call",
+					SessionID:  capturedSID,
+					Tool:       raw.Part.Tool,
+					ToolResult: raw.Part.State.Output,
+				})
 
 				case "text":
 					w.send(models.SessionEvent{
@@ -236,6 +235,7 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 					evt := models.SessionEvent{
 						Type:      "step_finish",
 						SessionID: capturedSID,
+						Reason:    raw.Part.Reason,
 					}
 					if raw.Part.Tokens.Total > 0 {
 						evt.Tokens = &models.TokenInfo{
@@ -280,10 +280,10 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 			}
 			if ctx.Err() != nil {
 				logger.Warn(logging.WarnSlowResponse, "opencode timeout/cancelled: pid=%d duration=%s", cmd.Process.Pid, time.Since(startTime))
-				w.send(models.SessionEvent{Type: "error", SessionID: capturedSID, Error: "process timeout or cancelled"})
+				w.send(models.SessionEvent{Type: "error", SessionID: capturedSID, Error: chaterr.UserFacing("process timeout or cancelled")})
 			} else {
 				logger.Error(logging.ErrSessionError, "opencode exited with error: pid=%d exit_code=%d err=%v", cmd.Process.Pid, exitCode, err)
-				w.send(models.SessionEvent{Type: "error", SessionID: capturedSID, Error: fmt.Sprintf("opencode exited: %v", err)})
+				w.send(models.SessionEvent{Type: "error", SessionID: capturedSID, Error: chaterr.UserFacing(fmt.Sprintf("opencode exited: %v", err))})
 			}
 		}
 		close(draftStop)
@@ -296,6 +296,25 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 		if st, err := os.Stat(draftPath); err == nil {
 			draftSize = st.Size()
 		}
+
+		if draftSize == 0 {
+			parentDraftPath := filepath.Join(filepath.Dir(opts.CWD), "current_draft.md")
+			if st, err := os.Stat(parentDraftPath); err == nil && st.Size() > 0 {
+				logger.Warn(logging.WarnProcessStuck,
+					"misplaced draft detected, moving: from=%s to=%s size=%d",
+					parentDraftPath, draftPath, st.Size())
+				if data, err := os.ReadFile(parentDraftPath); err == nil {
+					if err := os.WriteFile(draftPath, data, 0644); err == nil {
+						draftSize = st.Size()
+						_ = os.Remove(parentDraftPath)
+					} else {
+						logger.Warn(logging.WarnProcessStuck,
+							"failed to copy misplaced draft: from=%s err=%v", parentDraftPath, err)
+					}
+				}
+			}
+		}
+
 		logger.Info("opencode done: pid=%d duration=%s draft_size=%d had_error=%v exit_code=%d stdout_lines=%d stderr_bytes=%d",
 			cmd.Process.Pid, duration, draftSize, hadError, exitCode, stdoutLineCount, len(stderrData))
 
@@ -310,27 +329,12 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 			w.send(models.SessionEvent{
 				Type:      "done",
 				SessionID: capturedSID,
+				DraftSize: draftSize,
 			})
 		}
 	}()
 
 	return events, nil
-}
-
-func extractDraftPath(input json.RawMessage) string {
-	if len(input) == 0 {
-		return ""
-	}
-	var args struct {
-		FilePath string `json:"filePath"`
-	}
-	if err := json.Unmarshal(input, &args); err != nil {
-		return ""
-	}
-	if args.FilePath != "" && strings.HasSuffix(args.FilePath, "current_draft.md") {
-		return args.FilePath
-	}
-	return ""
 }
 
 func cleanEnv(env []string) []string {

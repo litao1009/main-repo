@@ -5,24 +5,44 @@ import { useParams, useSearchParams, useRouter } from "next/navigation"
 import { AnimatePresence, motion } from "framer-motion"
 import { toast } from "sonner"
 import {
-  sendTaskMessage, publishTask, fetchTask,
+  sendTaskMessage, publishTask, fetchTask, fetchAccounts,
   stopTask, fetchTaskMessages, clearTaskMessages,
-  getBookInfo, getBookContent, fetchTaskPublishList,
+  getBookInfo, getBookContent,
 } from "@/lib/api"
+import { getPlatformLabel } from "@/lib/platform-label"
+import { isAdmin } from "@/lib/auth"
 import {
   connectChatTaskWS,
   connectTaskWS,
   TASK_DETAIL_CHAT_WS_ENABLED,
   type WSController,
 } from "@/lib/ws"
-import type { SessionMessage, WSEvent, BookInfoResponse, PublishRecord } from "@/types"
+import type { SessionMessage, WSEvent, BookInfoResponse, BookChapter, BookChapterPhase } from "@/types"
 import { Send, Loader2, CheckCircle, AlertCircle, ArrowLeft, Trash2, Plus, ChevronRight, ChevronDown } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { Select as SelectRadix, SelectItem } from "@/components/ui/select"
-import { cn, formatChapterLabel, shouldRefreshBookInfoAfterAiReply } from "@/lib/utils"
-import { chatDisplayText } from "@/lib/chat-display"
+import {
+  cn,
+  formatChapterLabel,
+  resolveBookChapterPhase,
+  isBookChapterPublished,
+} from "@/lib/utils"
+import {
+  chatDisplayText,
+  formatChatSystemMessage,
+  type ChapterNoticeContext,
+} from "@/lib/chat-display"
 import { resolveTaskListReturnUrl } from "@/lib/task-navigation"
 import { getAuthUser } from "@/lib/auth"
+import { notifyNewChaptersIfAny } from "@/lib/chapter-update-notify"
+import { BookChapterContent } from "@/components/book-chapter-content"
+import {
+  buildDisplayBookContent,
+  resolveHeaderChapterTitle,
+} from "@/lib/book-content-display"
+
+/** 停留在任务详情页期间，定时刷新左侧章节列表（与是否在等 AI 回复无关） */
+const BOOK_INFO_POLL_INTERVAL_MS = 15_000
 
 function parseMessageTime(timestamp?: string): Date | null {
   if (!timestamp) return null
@@ -56,21 +76,15 @@ function formatChatTime(timestamp?: string): string {
   return `${dateText} ${time}`
 }
 
-function ChapterStatusBadge({
-  published,
-  draftVersion,
-}: {
-  published: boolean
-  draftVersion: number
-}) {
-  if (published) {
+function ChapterStatusBadge({ phase }: { phase: BookChapterPhase | null }) {
+  if (phase === "published") {
     return (
       <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-50 text-emerald-600">
         已发布
       </span>
     )
   }
-  if (draftVersion > 0) {
+  if (phase === "draft") {
     return (
       <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-orange-50 text-orange-600">
         有草稿
@@ -84,16 +98,78 @@ function ChapterStatusBadge({
   )
 }
 
-function shouldShowMessageTime(messages: SessionMessage[], index: number) {
-  const current = parseMessageTime(messages[index]?.timestamp)
-  if (!current) return false
-  if (index === 0) return true
+function findBookChapter(bookInfo: BookInfoResponse | null, sessionId: string): BookChapter | undefined {
+  if (!bookInfo?.volumes) return undefined
+  for (const vol of bookInfo.volumes) {
+    const ch = vol.chapters.find((c) => c.session_id === sessionId)
+    if (ch) return ch
+  }
+  return undefined
+}
 
-  const previous = parseMessageTime(messages[index - 1]?.timestamp)
-  if (!previous) return true
+function chapterNoticeContextForMessage(
+  msg: SessionMessage,
+  bookInfo: BookInfoResponse | null,
+): ChapterNoticeContext | undefined {
+  const sid = msg.session_id?.trim()
+  if (!sid || !bookInfo?.volumes) return undefined
+  for (const vol of bookInfo.volumes) {
+    const ch = vol.chapters.find((c) => c.session_id === sid)
+    if (!ch) continue
+    return {
+      volumeName: vol.volume_name || undefined,
+      chapterTitle: ch.title?.trim() || undefined,
+      chapterNumber: ch.chapter_number,
+    }
+  }
+  return undefined
+}
 
+/** 会话列表实际渲染的消息（与 map 内 return null 规则一致） */
+function isChatMessageVisible(msg: SessionMessage): boolean {
+  if (msg.role === "assistant" && !chatDisplayText(msg.text).trim()) return false
+  return true
+}
+
+/** 计算应展示时间标签的消息 id（相对「上次已展示的时间」间隔 ≥5 分钟，或换 session） */
+function buildMessageTimeVisibility(messages: SessionMessage[]): Set<string> {
+  const flags = new Set<string>()
   const fiveMinutes = 5 * 60 * 1000
-  return !isSameDay(current, previous) || current.getTime() - previous.getTime() >= fiveMinutes
+  let lastShownTime: Date | null = null
+  let prevVisible: SessionMessage | null = null
+
+  for (const msg of messages) {
+    if (!isChatMessageVisible(msg)) continue
+
+    const current = parseMessageTime(msg.timestamp)
+    if (!current) {
+      prevVisible = msg
+      continue
+    }
+
+    let show = lastShownTime === null
+
+    if (!show && prevVisible) {
+      if (msg.session_id && prevVisible.session_id && msg.session_id !== prevVisible.session_id) {
+        show = true
+      }
+    }
+
+    if (!show && lastShownTime) {
+      show =
+        !isSameDay(current, lastShownTime) ||
+        current.getTime() - lastShownTime.getTime() >= fiveMinutes
+    }
+
+    if (show) {
+      flags.add(msg.id)
+      lastShownTime = current
+    }
+
+    prevVisible = msg
+  }
+
+  return flags
 }
 
 const chatMessageFade = {
@@ -110,8 +186,6 @@ const aiBubbleFade = {
 }
 
 type AiPendingPhase = "thinking" | "processing" | "streaming" | "reply" | "error"
-
-type ComposerMode = "chat" | "edit"
 
 interface AiPendingBubble {
   id: string
@@ -228,10 +302,14 @@ export default function SessionPage() {
   const sessionIdFromQuery = searchParams.get("sid") || ""
 
   const [sessionId, setSessionId] = useState(sessionIdFromQuery)
+  const [authMounted, setAuthMounted] = useState(false)
   const [taskMessages, setTaskMessages] = useState<SessionMessage[]>([])
+  const showMessageTimeIds = useMemo(
+    () => buildMessageTimeVisibility(taskMessages),
+    [taskMessages],
+  )
   const [draftVersion, setDraftVersion] = useState(0)
   const [input, setInput] = useState("")
-  const [composerMode, setComposerMode] = useState<ComposerMode>("chat")
   const [streaming, setStreaming] = useState(false)
   const [streamingText, setStreamingText] = useState("")
   const [publishState, setPublishState] = useState("")
@@ -243,6 +321,7 @@ export default function SessionPage() {
   const [volumeName, setVolumeName] = useState("第一卷")
   const [chapterNumber, setChapterNumber] = useState(1)
   const [lockedAccountId, setLockedAccountId] = useState("")
+  const [publishAccountDisplay, setPublishAccountDisplay] = useState("")
 
   const [activeChapter, setActiveChapter] = useState<string>("")
   const [chapterDraft, setChapterDraft] = useState("")
@@ -258,16 +337,12 @@ export default function SessionPage() {
   const bookContentRequestRef = useRef(0)
   const [expandedVolumes, setExpandedVolumes] = useState<Set<string>>(new Set())
   const [selectedChapter, setSelectedChapter] = useState<{ volumeName: string; chapterNumber: number; sessionId: string; chapterTitle: string; status: string } | null>(null)
-  const [publishedSessionIds, setPublishedSessionIds] = useState<Set<string>>(() => new Set())
-
-  const syncPublishState = useCallback((items: PublishRecord[], info: BookInfoResponse | null) => {
-    const ids = new Set(items.map((i) => i.sessionId).filter(Boolean))
-    setPublishedSessionIds(ids)
+  const syncChapterNumberFromBookInfo = useCallback((info: BookInfoResponse | null) => {
     let maxPublishedChapter = 0
     if (info?.volumes) {
       for (const vol of info.volumes) {
         for (const ch of vol.chapters) {
-          if (ids.has(ch.session_id)) {
+          if (isBookChapterPublished(ch)) {
             maxPublishedChapter = Math.max(maxPublishedChapter, ch.chapter_number)
           }
         }
@@ -278,16 +353,28 @@ export default function SessionPage() {
 
   const chapters = useMemo(() => {
     if (!bookInfo) return []
-    const result: Array<{ sessionId: string; label: string; index: number; hasContent: boolean; chapterTitle?: string; published?: boolean; skillId?: string; model?: string }> = []
+    const result: Array<{
+      sessionId: string
+      label: string
+      index: number
+      hasContent: boolean
+      chapterTitle?: string
+      phase: BookChapterPhase | null
+      published: boolean
+      skillId?: string
+      model?: string
+    }> = []
     for (const vol of bookInfo.volumes) {
       for (const ch of vol.chapters) {
+        const phase = resolveBookChapterPhase(ch)
         result.push({
           sessionId: ch.session_id,
           label: formatChapterLabel(ch.chapter_number),
           index: ch.chapter_number,
-          hasContent: ch.draft_version > 0,
+          hasContent: phase !== null || ch.draft_version > 0,
           chapterTitle: ch.title || undefined,
-          published: publishedSessionIds.has(ch.session_id),
+          phase,
+          published: isBookChapterPublished(ch),
           skillId: taskSkillId,
           model: taskModel,
         })
@@ -295,7 +382,7 @@ export default function SessionPage() {
     }
     result.sort((a, b) => a.index - b.index)
     return result
-  }, [bookInfo, taskSkillId, taskModel, publishedSessionIds])
+  }, [bookInfo, taskSkillId, taskModel])
 
   /** 一键发布弹窗：最近已发布 / 下一章 / 待发布预览（最多 5 章） */
   const publishModalData = useMemo(() => {
@@ -351,12 +438,12 @@ export default function SessionPage() {
   const sessionIdRef = useRef(sessionIdFromQuery)
   const selectedChapterRef = useRef(selectedChapter)
   const novelNameLockedRef = useRef(novelNameLocked)
-  const lastSendComposerModeRef = useRef<ComposerMode>("chat")
-
-  const editTargetSessionId = selectedChapter?.sessionId || sessionId || activeChapter
-  const editTargetPublished = editTargetSessionId
-    ? publishedSessionIds.has(editTargetSessionId)
-    : false
+  const knownChapterIdsRef = useRef<Set<string>>(new Set())
+  const chapterNotifySeededRef = useRef(false)
+  const lastBookInfoPollAtRef = useRef(0)
+  const bookInfoPollInFlightRef = useRef(false)
+  const pendingAssistantRef = useRef<AiPendingBubble | null>(null)
+  const messagesSyncInFlightRef = useRef(false)
 
   const chapterStats = useMemo(() => {
     if (!bookInfo?.volumes?.length) return { total: 0, published: 0 }
@@ -365,30 +452,19 @@ export default function SessionPage() {
     for (const vol of bookInfo.volumes) {
       for (const ch of vol.chapters) {
         total += 1
-        if (publishedSessionIds.has(ch.session_id)) published += 1
+        if (isBookChapterPublished(ch)) published += 1
       }
     }
     return { total, published }
-  }, [bookInfo, publishedSessionIds])
-
-  const chatStatus = useMemo(() => {
-    if (wsReconnecting) return { label: "重连中", active: true }
-    if (streaming || pendingAssistant) {
-      if (toolCallActive || pendingAssistant?.phase === "processing") return { label: "处理中", active: true }
-      if (pendingAssistant?.phase === "thinking") return { label: "思考中", active: true }
-      return { label: "生成中", active: true }
-    }
-    return { label: "空闲", active: false }
-  }, [streaming, pendingAssistant, toolCallActive, wsReconnecting])
-
-  useEffect(() => {
-    setComposerMode("chat")
-  }, [taskId])
+  }, [bookInfo])
 
   useEffect(() => { activeChapterRef.current = activeChapter }, [activeChapter])
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
   useEffect(() => { selectedChapterRef.current = selectedChapter }, [selectedChapter])
   useEffect(() => { streamingRef.current = streaming }, [streaming])
+  useEffect(() => {
+    pendingAssistantRef.current = pendingAssistant
+  }, [pendingAssistant])
 
   const nextMsgId = useCallback(() => {
     msgCounterRef.current += 1
@@ -477,6 +553,10 @@ export default function SessionPage() {
   }, [taskId])
 
   useEffect(() => {
+    setAuthMounted(true)
+  }, [])
+
+  useEffect(() => {
     const container = chatContainerRef.current
     if (!container || taskMessages.length === 0) return
 
@@ -523,12 +603,76 @@ export default function SessionPage() {
     return () => ro.disconnect()
   }, [])
 
-  /** 刷新章节列表；不切换当前查看章节，不重新加载右侧正文 */
-  const refreshBookInfo = useCallback(async (opts?: { syncSessionId?: string }) => {
+  const applyChapterListUpdate = useCallback((info: BookInfoResponse) => {
+    const { nextKnown, nextSeeded } = notifyNewChaptersIfAny(
+      knownChapterIdsRef.current,
+      info,
+      chapterNotifySeededRef.current,
+    )
+    knownChapterIdsRef.current = nextKnown
+    chapterNotifySeededRef.current = nextSeeded
+    setBookInfo(info)
+    syncChapterNumberFromBookInfo(info)
+  }, [syncChapterNumberFromBookInfo])
+
+  /** 与 book/info 同步拉会话历史；发送中/收尾中跳过，避免与 pending 气泡抢状态 */
+  const syncTaskMessagesFromServer = useCallback(async () => {
     if (!taskId) return
+    if (streamingRef.current || pendingAssistantRef.current || finalizeInFlightRef.current) {
+      return
+    }
+    if (messagesSyncInFlightRef.current) return
+
+    messagesSyncInFlightRef.current = true
+    try {
+      const resp = await fetchTaskMessages(taskId)
+      const serverMsgs = dedupeSystemMessages(
+        Array.isArray(resp.messages) ? resp.messages : [],
+      )
+      setTaskMessages((prev) => {
+        if (serverMsgs.length === 0) return prev
+        const merged = mergeServerMessages(prev, serverMsgs)
+        merged.forEach((m) => animatedMessageIdsRef.current.add(m.id))
+        return merged
+      })
+    } catch {
+      // 后台同步失败不打断阅读/聊天
+    } finally {
+      messagesSyncInFlightRef.current = false
+    }
+  }, [taskId])
+
+  const syncTaskMessagesFromServerRef = useRef(syncTaskMessagesFromServer)
+  syncTaskMessagesFromServerRef.current = syncTaskMessagesFromServer
+
+  /**
+   * 刷新章节列表；不切换当前查看章节，不重新加载右侧正文。
+   * 成功后会同步 GET messages（C：与 15s 轮询一致）。
+   * scheduled：页面定时轮询，不走节流（避免与 15s 定时器叠加成约 30s 才请求一次）。
+   * force：首屏、发布成功、页签重新可见等需立即刷新。
+   */
+  const refreshBookInfo = useCallback(async (opts?: {
+    syncSessionId?: string
+    force?: boolean
+    scheduled?: boolean
+  }): Promise<BookInfoResponse | null> => {
+    if (!taskId) return null
+    const now = Date.now()
+    if (
+      !opts?.force &&
+      !opts?.scheduled &&
+      lastBookInfoPollAtRef.current > 0 &&
+      now - lastBookInfoPollAtRef.current < BOOK_INFO_POLL_INTERVAL_MS
+    ) {
+      return null
+    }
+    if (bookInfoPollInFlightRef.current) return null
+
+    bookInfoPollInFlightRef.current = true
     try {
       const info = await getBookInfo(taskId)
-      setBookInfo(info)
+      lastBookInfoPollAtRef.current = Date.now()
+      applyChapterListUpdate(info)
       if (info.novel_name && !novelNameLocked) setNovelName(info.novel_name)
 
       const sel = selectedChapterRef.current
@@ -541,7 +685,7 @@ export default function SessionPage() {
               volumeName: sel.volumeName,
               chapterNumber: sel.chapterNumber,
               sessionId: ch.session_id,
-              chapterTitle: ch.title,
+              chapterTitle: ch.title ?? "",
               status: ch.status,
             })
             break
@@ -558,13 +702,74 @@ export default function SessionPage() {
           }
         }
       }
+
+      await syncTaskMessagesFromServerRef.current()
+      return info
     } catch {
-      // 静默失败，避免打断聊天流
+      return null
+    } finally {
+      bookInfoPollInFlightRef.current = false
     }
-  }, [taskId, novelNameLocked])
+  }, [taskId, novelNameLocked, applyChapterListUpdate])
 
   const refreshBookInfoRef = useRef(refreshBookInfo)
   refreshBookInfoRef.current = refreshBookInfo
+
+  useEffect(() => {
+    knownChapterIdsRef.current = new Set()
+    chapterNotifySeededRef.current = false
+    lastBookInfoPollAtRef.current = 0
+  }, [taskId])
+
+  useEffect(() => {
+    if (!taskId) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+
+    const scheduleNextPoll = () => {
+      timer = setTimeout(async () => {
+        if (cancelled) return
+        await refreshBookInfoRef.current({
+          syncSessionId: sessionIdRef.current,
+          scheduled: true,
+        })
+        if (!cancelled) scheduleNextPoll()
+      }, BOOK_INFO_POLL_INTERVAL_MS)
+    }
+
+    scheduleNextPoll()
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [taskId])
+
+  // E：页签重新可见 / 窗口聚焦时立即刷新章节列表 + 会话（与 C 共用 refreshBookInfo）
+  useEffect(() => {
+    if (!taskId) return
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null
+
+    const scheduleRefresh = () => {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(() => {
+        void refreshBookInfoRef.current({ force: true })
+      }, 200)
+    }
+
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") scheduleRefresh()
+    }
+
+    window.addEventListener("focus", scheduleRefresh)
+    document.addEventListener("visibilitychange", onVisibility)
+
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      window.removeEventListener("focus", scheduleRefresh)
+      document.removeEventListener("visibilitychange", onVisibility)
+    }
+  }, [taskId])
 
   const finalizeStreamingTurn = useCallback(async (eventSessionId: string, options?: { skipEmptyToast?: boolean }) => {
     if (finalizeInFlightRef.current) return
@@ -585,12 +790,6 @@ export default function SessionPage() {
             pollAttempts,
             pollInterval,
           )
-          const lastAi = [...(messages || [])].reverse().find((m) => m.role === "assistant")
-          if (lastAi && shouldRefreshBookInfoAfterAiReply(lastAi.text)) {
-            void refreshBookInfoRef.current({ syncSessionId: sessionIdRef.current })
-          } else if (lastSendComposerModeRef.current === "edit") {
-            void refreshBookInfoRef.current({ syncSessionId: sessionIdRef.current })
-          }
           if (found || streamBuf) {
             showPendingReply(messages, streamBuf)
           } else {
@@ -671,11 +870,6 @@ export default function SessionPage() {
             break
           case "done": {
             void finalizeStreamingTurnRef.current(eventSessionId)
-            if (lastSendComposerModeRef.current === "edit") {
-              void refreshBookInfoRef.current({
-                syncSessionId: eventSessionId || sessionIdRef.current,
-              })
-            }
             break
           }
           case "error": {
@@ -758,6 +952,48 @@ export default function SessionPage() {
     void loadPage()
   }, [taskId, sessionIdFromQuery])
 
+  useEffect(() => {
+    if (!platform || !lockedAccountId) {
+      setPublishAccountDisplay("")
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const accounts = await fetchAccounts(platform)
+        const acc = accounts.find((a) => a.account_id === lockedAccountId)
+        if (!cancelled) setPublishAccountDisplay(acc?.masked_display ?? "")
+      } catch {
+        if (!cancelled) setPublishAccountDisplay("")
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [platform, lockedAccountId])
+
+  const publishHeaderMeta = useMemo(() => {
+    if (!platform || !lockedAccountId || !publishAccountDisplay) return null
+    return `${getPlatformLabel(platform)} · ${publishAccountDisplay}`
+  }, [platform, lockedAccountId, publishAccountDisplay])
+
+  const headerChapterTitle = useMemo(
+    () =>
+      resolveHeaderChapterTitle(
+        selectedChapter?.chapterTitle || chapterTitle,
+        bookContent,
+      ),
+    [selectedChapter?.chapterTitle, chapterTitle, bookContent],
+  )
+
+  const displayBookContent = useMemo(() => {
+    if (!bookContent) return ""
+    return buildDisplayBookContent(bookContent, {
+      stripChapterLine: Boolean(selectedChapter),
+      stripTitleLine: Boolean(headerChapterTitle),
+    })
+  }, [bookContent, selectedChapter, headerChapterTitle])
+
   // 任务详情页 task 级 WebSocket（TASK_DETAIL_CHAT_WS_ENABLED 为 false 时不连接）
   useEffect(() => {
     if (!taskId || !TASK_DETAIL_CHAT_WS_ENABLED) return
@@ -769,23 +1005,20 @@ export default function SessionPage() {
 
   useEffect(() => {
     if (!taskId) return
-    Promise.all([getBookInfo(taskId), fetchTaskPublishList(taskId)])
-      .then(([info, pub]) => {
-        setBookInfo(info)
-        if (info.novel_name) setNovelName(info.novel_name)
-        syncPublishState(pub.items, info)
-        const vols = Array.isArray(info?.volumes) ? info.volumes : []
-        if (vols.length > 0) {
-          const firstCh = vols[0].chapters[0]
-          setExpandedVolumes(new Set([vols[0].volume_name]))
-          if (firstCh && !sessionIdFromQuery) {
-            setActiveChapter(firstCh.session_id)
-            setSessionId(firstCh.session_id)
-          }
+    void refreshBookInfoRef.current({ force: true }).then((info) => {
+      if (!info) return
+      if (info.novel_name) setNovelName(info.novel_name)
+      const vols = Array.isArray(info.volumes) ? info.volumes : []
+      if (vols.length > 0) {
+        const firstCh = vols[0].chapters[0]
+        setExpandedVolumes(new Set([vols[0].volume_name]))
+        if (firstCh && !sessionIdFromQuery) {
+          setActiveChapter(firstCh.session_id)
+          setSessionId(firstCh.session_id)
         }
-      })
-      .catch(() => {})
-  }, [taskId, sessionIdFromQuery, syncPublishState])
+      }
+    })
+  }, [taskId, sessionIdFromQuery])
 
   const loadSelectedChapter = async (volName: string, chapNum: number) => {
     if (!taskId) return
@@ -813,18 +1046,6 @@ export default function SessionPage() {
 
   const handleSend = async () => {
     if (!input.trim() || !taskId) return
-    const mode = composerMode
-    lastSendComposerModeRef.current = mode
-    if (mode === "edit") {
-      if (!editTargetSessionId) {
-        toast.error("请先在章节列表中选择要修改的章节")
-        return
-      }
-      if (editTargetPublished) {
-        toast.error("当前章节已发布，不能再通过 AI 修改内容")
-        return
-      }
-    }
     const mid = nextMsgId()
     const text = input.trim()
     turnBaselineCountRef.current = taskMessages.length
@@ -842,9 +1063,8 @@ export default function SessionPage() {
     try {
       await sendTaskMessage(taskId, {
         text,
-        target_session_id: mode === "edit" ? editTargetSessionId : undefined,
         draft_version: draftVersion,
-        mode,
+        mode: "chat",
       })
       if (!TASK_DETAIL_CHAT_WS_ENABLED) {
         void finalizeStreamingTurnRef.current(sessionIdRef.current)
@@ -907,12 +1127,7 @@ export default function SessionPage() {
         setPublishState("done"); publishStateRef.current = "done"
         if (novelName) setNovelNameLocked(true)
         try {
-          const [info, pub] = await Promise.all([
-            getBookInfo(taskId),
-            fetchTaskPublishList(taskId),
-          ])
-          setBookInfo(info)
-          syncPublishState(pub.items, info)
+          await refreshBookInfo({ force: true })
         } catch {
           // 发布已成功，刷新状态失败时下次进入页面会纠正
         }
@@ -971,23 +1186,33 @@ export default function SessionPage() {
           >
             <ArrowLeft size={18} />
           </button>
-          <div className="flex items-center gap-3 min-w-0 pl-0.5">
-            <span className="hidden sm:block w-1 h-8 rounded-full bg-gradient-to-b from-orange-500 to-amber-400 shrink-0" aria-hidden />
-            <div className="min-w-0">
-              <h1 className="text-lg font-bold text-slate-900 truncate leading-tight tracking-tight">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="flex items-center gap-3 min-w-0">
+              <h1 className="text-lg font-bold text-slate-900 truncate leading-tight tracking-tight min-w-0 shrink">
                 {novelName || "未命名作品"}
               </h1>
+              {publishHeaderMeta ? (
+                <span
+                  className="text-sm font-medium text-slate-500 truncate shrink-0 max-w-[min(40vw,12rem)] sm:max-w-xs"
+                  title={publishHeaderMeta}
+                >
+                  {publishHeaderMeta}
+                </span>
+              ) : null}
             </div>
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => setShowDeleteModal(true)}
-            className="px-3 py-1.5 text-sm font-medium text-slate-500 bg-white border border-slate-200 rounded-md hover:bg-red-50 hover:text-red-500 hover:border-red-200 transition-colors flex items-center gap-1.5 shadow-sm"
-          >
-            <Trash2 size={14} />
-            删除
-          </button>
+          {authMounted && isAdmin() && (
+            <button
+              type="button"
+              onClick={() => setShowDeleteModal(true)}
+              className="px-3 py-1.5 text-sm font-medium text-slate-500 bg-white border border-slate-200 rounded-md hover:bg-red-50 hover:text-red-500 hover:border-red-200 transition-colors flex items-center gap-1.5 shadow-sm"
+            >
+              <Trash2 size={14} />
+              删除
+            </button>
+          )}
           <button
             type="button"
             hidden
@@ -1016,26 +1241,18 @@ export default function SessionPage() {
 
         {/* 左侧：对话区 */}
         <section className="w-[35%] min-w-[320px] max-w-[500px] border-r border-slate-200 bg-slate-100 flex flex-col">
-          <div className="h-11 px-3 border-b border-slate-200 bg-slate-100 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className={cn(
-                  "w-1.5 h-1.5 rounded-full shrink-0",
-                  chatStatus.active ? "bg-orange-500 animate-pulse" : "bg-slate-400",
-                )}
-                aria-hidden
-              />
-              <span className="text-xs text-slate-500">{chatStatus.label}</span>
-            </div>
+          <div className="relative h-11 border-b border-slate-200 bg-white shadow-sm flex items-center justify-center shrink-0">
+            <span className="text-sm font-medium text-slate-700">会话</span>
             <button
               type="button"
               onClick={() => setShowClearChatModal(true)}
               disabled={taskMessages.length === 0 || streaming}
               title="清空记录"
               aria-label="清空记录"
-              className="p-1.5 rounded-md text-slate-400 hover:text-red-500 hover:bg-white/80 disabled:opacity-35 disabled:hover:text-slate-400 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors"
+              className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-slate-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-slate-500"
             >
-              <Trash2 size={15} />
+              <Trash2 size={14} />
+              清空记录
             </button>
           </div>
           <div
@@ -1043,7 +1260,15 @@ export default function SessionPage() {
             className="flex-1 overflow-y-auto overflow-anchor-auto scroll-stable p-4 space-y-5 scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-transparent"
           >
               {taskMessages.map((msg, index) => {
-                const displayText = msg.role === "assistant" ? chatDisplayText(msg.text) : msg.text
+                const displayText =
+                  msg.role === "assistant"
+                    ? chatDisplayText(
+                        msg.text,
+                        chapterNoticeContextForMessage(msg, bookInfo),
+                      )
+                    : msg.role === "system"
+                      ? formatChatSystemMessage(msg.text)
+                      : msg.text
                 if (msg.role === "assistant" && !displayText.trim()) return null
 
                 const shouldAnimate = msg.role === "user" && entryAnimateIds.has(msg.id)
@@ -1061,7 +1286,7 @@ export default function SessionPage() {
                       clearEntryAnimation(msg.id)
                     }}
                   >
-                    {shouldShowMessageTime(taskMessages, index) && (
+                    {showMessageTimeIds.has(msg.id) && (
                       <div className="flex justify-center">
                         <span className="px-2.5 py-1 rounded-full bg-slate-200/70 text-[11px] text-slate-500">
                           {formatChatTime(msg.timestamp)}
@@ -1152,78 +1377,19 @@ export default function SessionPage() {
           </div>
 
           <div className="px-3 py-2.5 bg-white border-t border-slate-200 shrink-0 space-y-2">
-            <div className="flex items-center justify-between gap-2 px-0.5">
-              <div
-                className="inline-flex p-0.5 rounded-lg bg-slate-100 border border-slate-200/80"
-                role="tablist"
-                aria-label="会话模式"
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={composerMode === "chat"}
-                  onClick={() => setComposerMode("chat")}
-                  className={cn(
-                    "px-3 py-1 rounded-md text-xs font-medium transition-all",
-                    composerMode === "chat"
-                      ? "bg-white text-slate-800 shadow-sm"
-                      : "text-slate-500 hover:text-slate-700",
-                  )}
-                >
-                  对话
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={composerMode === "edit"}
-                  onClick={() => setComposerMode("edit")}
-                  className={cn(
-                    "px-3 py-1 rounded-md text-xs font-medium transition-all",
-                    composerMode === "edit"
-                      ? "bg-white text-orange-700 shadow-sm ring-1 ring-orange-200/60"
-                      : "text-slate-500 hover:text-slate-700",
-                  )}
-                >
-                  改稿
-                </button>
-              </div>
-              <p className="text-[10px] text-slate-400 text-right leading-snug min-w-0 flex-1 truncate">
-                {composerMode === "chat"
-                  ? "不修改章节正文"
-                  : selectedChapter
-                    ? editTargetPublished
-                      ? "本章已发布，不可改稿"
-                      : `改稿：${formatChapterLabel(selectedChapter.chapterNumber)}`
-                    : "请先在右侧选择章节"}
-              </p>
-            </div>
             <div className="flex gap-2 items-center rounded-3xl border border-slate-200 bg-white pl-4 pr-1.5 py-1.5 shadow-sm focus-within:border-orange-300 focus-within:ring-2 focus-within:ring-orange-100/80 transition-all">
               <textarea
                 rows={1}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={keyDown}
-                placeholder={
-                  composerMode === "chat"
-                    ? "有什么想法，直接说…"
-                    : editTargetPublished
-                      ? "本章已发布，请切换到「对话」"
-                      : selectedChapter
-                        ? `描述如何修改${formatChapterLabel(selectedChapter.chapterNumber)}…`
-                        : "请先在章节列表中选择要修改的章节"
-                }
+                placeholder="有什么想法，直接说…"
                 className="flex-1 min-h-[34px] max-h-28 bg-transparent py-1.5 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none resize-none leading-normal"
               />
               <button
                 onClick={handleSend}
                 disabled={!input.trim() || streaming}
-                title={
-                  composerMode === "chat"
-                    ? "对话 (Enter)"
-                    : editTargetPublished
-                      ? "已发布章节不可改稿"
-                      : "改稿模式 (Enter)"
-                }
+                title="发送 (Enter)"
                 className="h-9 w-9 shrink-0 rounded-full bg-gradient-to-br from-orange-500 to-orange-600 text-white hover:from-orange-600 hover:to-orange-700 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm inline-flex items-center justify-center"
               >
                 {streaming ? (
@@ -1281,12 +1447,12 @@ export default function SessionPage() {
                       <ul className="mt-1 mb-0.5 ml-3 space-y-0.5 border-l-2 border-slate-200/80 pl-2.5">
                         {vol.chapters.map((ch) => {
                           const sel = selectedChapter?.sessionId === ch.session_id
-                          const published = publishedSessionIds.has(ch.session_id)
+                          const chapterPhase = resolveBookChapterPhase(ch)
                           return (
                             <li key={ch.session_id}>
                               <button
                                 onClick={() => {
-                                  const info = { volumeName: vol.volume_name, chapterNumber: ch.chapter_number, sessionId: ch.session_id, chapterTitle: ch.title, status: ch.status }
+                                  const info = { volumeName: vol.volume_name, chapterNumber: ch.chapter_number, sessionId: ch.session_id, chapterTitle: ch.title ?? "", status: ch.status }
                                   setSelectedChapter(info)
                                   setActiveChapter(ch.session_id)
                                   setSessionId(ch.session_id)
@@ -1311,10 +1477,7 @@ export default function SessionPage() {
                                     ? `${formatChapterLabel(ch.chapter_number)} ${ch.title}`
                                     : formatChapterLabel(ch.chapter_number)}
                                 </span>
-                                <ChapterStatusBadge
-                                  published={published}
-                                  draftVersion={ch.draft_version}
-                                />
+                                <ChapterStatusBadge phase={chapterPhase} />
                               </button>
                             </li>
                           )
@@ -1335,28 +1498,33 @@ export default function SessionPage() {
           <div className="h-11 px-4 border-b border-slate-200 bg-white flex items-center justify-between gap-3 shrink-0 min-w-0">
             {selectedChapter ? (
               <>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-slate-800 truncate">
+                <p
+                  className="flex items-center gap-1.5 min-w-0 text-sm truncate"
+                  title={
+                    headerChapterTitle
+                      ? `${selectedChapter.volumeName} ${formatChapterLabel(selectedChapter.chapterNumber)} · ${headerChapterTitle}`
+                      : `${selectedChapter.volumeName} ${formatChapterLabel(selectedChapter.chapterNumber)}`
+                  }
+                >
+                  <span className="shrink-0 text-xs font-medium text-slate-400">
                     {selectedChapter.volumeName} {formatChapterLabel(selectedChapter.chapterNumber)}
-                  </p>
-                  {selectedChapter.chapterTitle ? (
-                    <p className="text-[11px] text-slate-400 truncate mt-0.5">{selectedChapter.chapterTitle}</p>
+                  </span>
+                  {headerChapterTitle ? (
+                    <>
+                      <span className="shrink-0 text-slate-300" aria-hidden>
+                        ·
+                      </span>
+                      <span className="min-w-0 font-semibold text-slate-900 truncate">
+                        {headerChapterTitle}
+                      </span>
+                    </>
                   ) : null}
-                </div>
+                </p>
                 {bookContentLoading ? (
                   <span className="shrink-0 flex items-center gap-1 text-[10px] font-medium text-slate-400">
                     <Loader2 size={11} className="animate-spin" />
                     加载中
                   </span>
-                ) : selectedChapter ? (
-                  <ChapterStatusBadge
-                    published={publishedSessionIds.has(selectedChapter.sessionId)}
-                    draftVersion={
-                      bookInfo?.volumes
-                        ?.flatMap((v) => v.chapters)
-                        .find((c) => c.session_id === selectedChapter.sessionId)?.draft_version ?? 0
-                    }
-                  />
                 ) : null}
               </>
             ) : (
@@ -1375,8 +1543,8 @@ export default function SessionPage() {
                 <p className="text-slate-600 text-sm">{bookContentError}</p>
               </div>
             ) : bookContent ? (
-              <div className="max-w-2xl mx-auto text-sm text-slate-700 leading-relaxed">
-                <p className="whitespace-pre-wrap">{bookContent}</p>
+              <div className="max-w-2xl mx-auto">
+                <BookChapterContent content={displayBookContent} />
               </div>
             ) : (
               <div className="max-w-2xl mx-auto text-center pt-24">

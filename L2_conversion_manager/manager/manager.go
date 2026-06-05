@@ -1,10 +1,13 @@
 package manager
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	"time"
 
 	"session_manager/adapter"
+	"session_manager/chaterr"
 	"session_manager/models"
 	"session_manager/pool"
 	"session_manager/runner"
@@ -65,7 +69,7 @@ type SessionManager struct {
 	fetchedSkills    map[string]adapter.SkillDef
 	fetchedMu        sync.RWMutex
 
-	taskRunGates    sync.Map // taskID -> *taskRunGate
+	taskRunGates sync.Map // taskID -> *taskRunGate
 
 	stopCh chan struct{}
 }
@@ -191,13 +195,13 @@ func (sm *SessionManager) initOpenCodeConfig() error {
 	}
 
 	existing["permission"] = map[string]interface{}{
-		"edit":               "allow",
-		"bash":               "deny",
-		"write":              "allow",
-		"read":               "allow",
+		"edit":  "allow",
+		"bash":  "deny",
+		"write": "allow",
+		"read":  "allow",
 		"external_directory": map[string]interface{}{
-			skillsDir + "/*": "allow",
-			tasksDir + "/*":  "allow",
+			skillsDir + "/*":  "allow",
+			tasksDir + "/*":   "allow",
 			"/tmp/opencode/*": "allow",
 		},
 		"doom_loop": "allow",
@@ -403,25 +407,25 @@ func (sm *SessionManager) injectTaskContext(cwd, taskID string) {
 	shortData, errShort := sm.store.ReadShortTerm(taskID)
 	medData, errMed := sm.store.ReadMediumTerm(taskID)
 
-		if errShort != nil || len(shortData) == 0 {
-			sessions, err := sm.store.LoadTaskSessions(taskID)
-			if err == nil && len(sessions) > 0 {
-				var validSessions []*models.Session
-				for _, s := range sessions {
-					if s.ChapterNumber <= 0 {
-						continue
-					}
-					if s.Status == models.StatusCreated || s.Status == models.StatusGenerating {
-						continue
-					}
-					sessCwd := sm.store.GetSessionCWDDir(taskID, s.SessionID)
-					draftPath := filepath.Join(sessCwd, "current_draft.md")
-					if info, statErr := os.Stat(draftPath); statErr != nil || info.Size() == 0 {
-						continue
-					}
-					validSessions = append(validSessions, s)
+	if errShort != nil || len(shortData) == 0 {
+		sessions, err := sm.store.LoadTaskSessions(taskID)
+		if err == nil && len(sessions) > 0 {
+			var validSessions []*models.Session
+			for _, s := range sessions {
+				if s.ChapterNumber <= 0 {
+					continue
 				}
-				if len(validSessions) > 0 {
+				if s.Status == models.StatusCreated || s.Status == models.StatusGenerating {
+					continue
+				}
+				sessCwd := sm.store.GetSessionCWDDir(taskID, s.SessionID)
+				draftPath := filepath.Join(sessCwd, "current_draft.md")
+				if info, statErr := os.Stat(draftPath); statErr != nil || info.Size() == 0 {
+					continue
+				}
+				validSessions = append(validSessions, s)
+			}
+			if len(validSessions) > 0 {
 				var content string
 				start := 0
 				if len(validSessions) > models.ShortTermWindowSize {
@@ -480,20 +484,42 @@ func (sm *SessionManager) saveChatOpenCodeSession(cwd, sid string) {
 	_ = os.WriteFile(sm.chatOpenCodeSessionPath(cwd), []byte(sid), 0644)
 }
 
-func (sm *SessionManager) resolveChapterNoticeMeta(taskID, sessionID string, sess *models.Session, draftPath string) (int, string) {
+func (sm *SessionManager) resolveChapterNoticeMeta(taskID, sessionID string, sess *models.Session, draftPath string) (chapterNo int, volumeName, chapterTitle string, effectiveDraftPath string) {
+	// 对话模式 runSessionLoop 的 sessionID 为空时，回退到任务当前/最新章节 session
+	if sessionID == "" && taskID != "" {
+		if task, err := sm.store.GetTask(taskID); err == nil {
+			if task.ActiveSessionID != "" {
+				sessionID = task.ActiveSessionID
+			} else if len(task.SessionIDs) > 0 {
+				sessionID = task.SessionIDs[len(task.SessionIDs)-1]
+			}
+		}
+	}
 	if sess == nil && sessionID != "" && taskID != "" {
 		if s, err := sm.store.GetSession(taskID, sessionID); err == nil {
 			sess = s
 		}
 	}
-	chapterNo := 0
+	if draftPath == "" && sessionID != "" && taskID != "" {
+		draftPath = filepath.Join(sm.store.GetSessionCWDDir(taskID, sessionID), "current_draft.md")
+	}
+	chapterNo = 0
 	if sess != nil && sess.ChapterNumber > 0 {
 		chapterNo = sess.ChapterNumber
 	} else if sess != nil && taskID != "" {
 		chapterNo = sm.inferChapterNumberForSession(taskID, sess)
 	}
-	title := parseDraftChapterTitle(draftPath)
-	return chapterNo, title
+	chapterTitle = parseDraftChapterTitle(draftPath)
+	volumeName = ""
+	if sess != nil {
+		volumeName = strings.TrimSpace(sess.VolumeName)
+	}
+	if volumeName == "" && taskID != "" {
+		if task, err := sm.store.GetTask(taskID); err == nil {
+			volumeName = strings.TrimSpace(task.VolumeName)
+		}
+	}
+	return chapterNo, volumeName, chapterTitle, draftPath
 }
 
 func (sm *SessionManager) inferChapterNumberForSession(taskID string, sess *models.Session) int {
@@ -551,7 +577,7 @@ func (sm *SessionManager) Send(ctx context.Context, sessionID string, req models
 
 	go func() {
 		defer sm.releaseTaskRun(taskID)
-		sm.runSessionLoop(context.Background(), sessionID, taskID, sess.CWDPath, sess.Model, req.Text, sess.OpenCodeSID, true)
+		sm.runSessionLoop(context.Background(), sessionID, taskID, sess.CWDPath, sess.Model, req.Text, sess.OpenCodeSID)
 	}()
 
 	return nil
@@ -586,7 +612,7 @@ func (sm *SessionManager) SendTaskMessage(ctx context.Context, taskID string, re
 		ocSID := sm.loadChatOpenCodeSession(cwd)
 		go func() {
 			defer sm.releaseTaskRun(taskID)
-			sm.runSessionLoop(context.Background(), "", taskID, cwd, task.Model, req.Text, ocSID, false)
+			sm.runSessionLoop(context.Background(), "", taskID, cwd, task.Model, req.Text, ocSID)
 		}()
 		return nil
 	}
@@ -636,12 +662,12 @@ func (sm *SessionManager) SendTaskMessage(ctx context.Context, taskID string, re
 
 	go func() {
 		defer sm.releaseTaskRun(taskID)
-		sm.runSessionLoop(context.Background(), targetSessionID, taskID, sess.CWDPath, sess.Model, req.Text, "", false)
+		sm.runSessionLoop(context.Background(), targetSessionID, taskID, sess.CWDPath, sess.Model, req.Text, "")
 	}()
 	return nil
 }
 
-func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID, cwd, model, message, ocSID string, writeDraftOnText bool) {
+func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID, cwd, model, message, ocSID string) {
 	logger := logging.NewLogger("SessionWorker",
 		logging.WithTaskID(taskID),
 		logging.WithSessionID(sessionID),
@@ -649,7 +675,7 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 
 	if err := sm.pool.Acquire(ctx); err != nil {
 		logger.Error(logging.ErrTimeout, "pool acquire failed: session=%s err=%v", sessionID, err)
-		sm.appendTaskMessage(taskID, sessionID, "system", "server busy, please retry later", 0)
+		sm.appendTaskMessage(taskID, sessionID, "system", chaterr.UserFacing("server busy, please retry later"), 0)
 		return
 	}
 	defer sm.pool.Release()
@@ -676,10 +702,6 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 	}
 
 	timeout := time.Duration(sm.cfg.DefaultTimeoutSec) * time.Second
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	runCtx = logging.NewContext(runCtx, logger)
 
 	apiKey := sm.cfg.DeepseekAPIKey
 	if apiKey == "" {
@@ -687,29 +709,21 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 	}
 
 	opts := runner.RunOptions{
-		CWD:              cwd,
-		Model:            model,
-		SessionID:        ocSID,
-		Message:          message,
-		Timeout:          timeout,
-		ConfigPath:       sm.configPath,
-		DeepseekAPIKey:   apiKey,
-		WriteDraftOnText: writeDraftOnText,
-	}
-
-	logger.Info("launching opencode: session=%s model=%s cwd=%s", sessionID, model, cwd)
-	events, err := sm.runner.Run(runCtx, opts)
-	if err != nil {
-		logger.Error(logging.ErrSessionError, "opencode launch failed: session=%s err=%v", sessionID, err)
-		errText := fmt.Sprintf("failed to start opencode: %v", err)
-		sm.appendTaskMessage(taskID, sessionID, "system", errText, 0)
-		return
+		CWD:            cwd,
+		Model:          model,
+		SessionID:      ocSID,
+		Message:        message,
+		Timeout:        timeout,
+		ConfigPath:     sm.configPath,
+		DeepseekAPIKey: apiKey,
 	}
 
 	msgCount := 0
 	totalTokens := 0
+	apiEverResponded := false
 	capturedSID := ocSID
-	var textBuf strings.Builder
+	var lastStepReason string
+	var draftSizeFromDone int64
 	var assistantText strings.Builder
 	assistantPersisted := false
 	var evtCountStepStart, evtCountToken, evtCountToolCall, evtCountStepFinish, evtCountReasoning, evtCountDraftUpdated, evtCountError, evtCountOther int
@@ -753,8 +767,23 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 		if assistantPersisted {
 			return
 		}
-		chapterNo, chapterTitle := sm.resolveChapterNoticeMeta(taskID, sessionID, sess, sessionDraftPath)
-		display := chatDisplayOrDraftNotice(assistantText.String(), sessionDraftPath, chapterNo, chapterTitle)
+		chapterNo, volumeName, chapterTitle, noticeDraftPath := sm.resolveChapterNoticeMeta(taskID, sessionID, sess, sessionDraftPath)
+		draftWrittenThisTurn := DraftFileChangedSince(noticeDraftPath, draftBaselineMod, draftBaselineSize)
+		if sessionID == "" {
+			noticeDraftPath = ""
+			chapterNo = 0
+			volumeName = ""
+			chapterTitle = ""
+			draftWrittenThisTurn = false
+		}
+		display := chatDisplayOrDraftNotice(
+			assistantText.String(),
+			noticeDraftPath,
+			chapterNo,
+			volumeName,
+			chapterTitle,
+			draftWrittenThisTurn,
+		)
 		if strings.TrimSpace(display) == "" {
 			return
 		}
@@ -769,129 +798,155 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 		}
 	}
 
-	for evt := range events {
-		if capturedSID == "" && evt.SessionID != "" && evt.SessionID != sessionID {
-			capturedSID = evt.SessionID
-		}
+	maxRetries := 5
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		assistantText.Reset()
+		assistantPersisted = false
+		noContentDetected = false
+		draftSizeFromDone = 0
+		lastStepReason = ""
+		evtCountStepStart = 0
+		evtCountToken = 0
+		evtCountToolCall = 0
+		evtCountStepFinish = 0
+		evtCountReasoning = 0
+		evtCountDraftUpdated = 0
+		evtCountError = 0
+		evtCountOther = 0
 
-		evt.SessionID = sessionID
-		evt.TaskID = taskID
-
-		switch evt.Type {
-		case "step_start":
-			evtCountStepStart++
-		case "token":
-			evtCountToken++
-		case "tool_call":
-			evtCountToolCall++
-		case "step_finish":
-			evtCountStepFinish++
-		case "reasoning":
-			evtCountReasoning++
-		case "draft_updated":
-			evtCountDraftUpdated++
-		case "error":
-			evtCountError++
-		default:
-			evtCountOther++
-		}
-
-		if evt.Type == "token" || (evt.Type == "step_finish" && strings.TrimSpace(evt.Text) != "") {
-			if evt.Text != "" {
-				textBuf.WriteString(evt.Text)
-				assistantText.WriteString(evt.Text)
+		runCtx, cancel := context.WithTimeout(ctx, timeout)
+		runCtx = logging.NewContext(runCtx, logger)
+		logger.Info("launching opencode: session=%s model=%s cwd=%s attempt=%d/%d", sessionID, model, cwd, attempt+1, maxRetries)
+		events, err := sm.runner.Run(runCtx, opts)
+		if err != nil {
+			cancel()
+			if attempt < maxRetries-1 {
+				logger.Warn(logging.WarnProcessStuck, "opencode launch failed, retrying: attempt=%d/%d session=%s err=%v", attempt+1, maxRetries, sessionID, err)
+				time.Sleep(3 * time.Second)
+				continue
 			}
+			logger.Error(logging.ErrSessionError, "opencode launch failed: session=%s err=%v", sessionID, err)
+			errText := chaterr.UserFacing(fmt.Sprintf("failed to start opencode: %v", err))
+			sm.appendTaskMessage(taskID, sessionID, "system", errText, 0)
+			return
 		}
 
-		if sessionID != "" && evt.Type == "step_start" && capturedSID != "" {
-			sess, err := sm.store.GetSession(taskID, sessionID)
-			if err == nil && sess.OpenCodeSID == "" {
-				sess.OpenCodeSID = capturedSID
-				_ = sm.store.UpsertSessionInTask(sess)
+		for evt := range events {
+			if capturedSID == "" && evt.SessionID != "" && evt.SessionID != sessionID {
+				capturedSID = evt.SessionID
 			}
+
+			evt.SessionID = sessionID
+			evt.TaskID = taskID
+
+			switch evt.Type {
+			case "step_start":
+				evtCountStepStart++
+			case "token":
+				evtCountToken++
+			case "tool_call":
+				evtCountToolCall++
+			case "step_finish":
+				evtCountStepFinish++
+			case "reasoning":
+				evtCountReasoning++
+			case "draft_updated":
+				evtCountDraftUpdated++
+			case "error":
+				evtCountError++
+			default:
+				evtCountOther++
+			}
+
+		if evt.Type == "reasoning" || (evt.Type == "step_finish" && evt.Reason != "") {
+			apiEverResponded = true
+		}
+		if evt.Type == "step_finish" && evt.Reason != "" {
+			lastStepReason = evt.Reason
 		}
 
-		if evt.Type == "step_finish" && evt.Tokens != nil {
-			totalTokens += evt.Tokens.Total
-		}
+			if evt.Type == "token" || (evt.Type == "step_finish" && strings.TrimSpace(evt.Text) != "") {
+				if evt.Text != "" {
+					assistantText.WriteString(evt.Text)
+				}
+			}
 
-		if evt.Type == "tool_call" && evt.DraftPath != "" && (evt.ToolResult != "" || isWriteToolName(evt.Tool)) {
+			if sessionID != "" && evt.Type == "step_start" && capturedSID != "" {
+				sess, err := sm.store.GetSession(taskID, sessionID)
+				if err == nil && sess.OpenCodeSID == "" {
+					sess.OpenCodeSID = capturedSID
+					_ = sm.store.UpsertSessionInTask(sess)
+				}
+			}
+
+			if evt.Type == "step_finish" && evt.Tokens != nil {
+				totalTokens += evt.Tokens.Total
+			}
+
+		if evt.Type == "done" {
 			emitDraftUpdated()
-		}
-
-		if evt.Type == "done" || evt.Type == "step_finish" {
+			if evt.DraftSize > 0 {
+				draftSizeFromDone = evt.DraftSize
+			}
 			if strings.TrimSpace(assistantText.String()) != "" {
 				persistAssistantMessage()
-			} else if sessionDraftPath != "" {
-				if info, err := os.Stat(sessionDraftPath); err == nil && info.Size() > 0 {
+			} else if sessionID != "" {
+				_, _, _, noticeDraftPath := sm.resolveChapterNoticeMeta(taskID, sessionID, sess, sessionDraftPath)
+				if DraftFileChangedSince(noticeDraftPath, draftBaselineMod, draftBaselineSize) {
 					persistAssistantMessage()
 				}
 			}
 		}
 
-		if writeDraftOnText && (evt.Type == "step_finish" || evt.Type == "done") && textBuf.Len() > 0 {
-			cwd := sm.store.GetSessionCWDDir(taskID, sessionID)
-			draftPath := filepath.Join(cwd, "current_draft.md")
-			newContent := []byte(textBuf.String())
-			write := true
-			if existing, err := os.ReadFile(draftPath); err == nil && len(existing) > len(newContent) {
-				write = false
-			}
-			if write {
-				if err := os.WriteFile(draftPath, newContent, 0644); err == nil {
-					if draftSess, getErr := sm.store.GetSession(taskID, sessionID); getErr == nil && draftSess.Status == models.StatusGenerating {
-						draftSess.Status = models.StatusDraftReady
-						_ = sm.store.UpsertSessionInTask(draftSess)
-						logger.Info("status changed: GENERATING -> DRAFT_READY: session=%s draft=%d bytes", sessionID, len(newContent))
-					}
-				}
-			}
+		if (evt.Type == "done" || evt.Type == "error") && draftSizeFromDone == 0 {
+			noContentDetected = true
+			logger.Warn(logging.WarnProcessStuck, "opencode returned no content (draft_size=0): session=%s task=%s model=%s last_step_reason=%s total_tokens=%d msg_count=%d events(step_start=%d tool_call=%d step_finish=%d reasoning=%d draft_updated=%d error=%d other=%d)",
+				sessionID, taskID, model, lastStepReason, totalTokens, msgCount,
+				evtCountStepStart, evtCountToolCall, evtCountStepFinish, evtCountReasoning, evtCountDraftUpdated, evtCountError, evtCountOther)
 		}
 
-		if evt.Type == "done" {
-			emitDraftUpdated()
-		}
-
-		if evt.Type == "done" && !assistantPersisted && strings.TrimSpace(assistantText.String()) == "" {
-			draftExists := false
-			if sessionDraftPath != "" {
-				if info, err := os.Stat(sessionDraftPath); err == nil && info.Size() > 0 {
-					draftExists = true
+			if evt.Type == "token" || evt.Type == "tool_call" || evt.Type == "step_finish" ||
+				evt.Type == "done" || evt.Type == "error" || evt.Type == "draft_updated" ||
+				evt.Type == "reasoning" {
+				if evt.Type == "error" && evt.Error != "" {
+					sm.appendTaskMessage(taskID, sessionID, "system", chaterr.UserFacing(evt.Error), 0)
 				}
-			}
-			if !draftExists {
-				noContentDetected = true
-				logger.Warn(logging.WarnProcessStuck, "opencode returned no content: session=%s task=%s model=%s text_buf_len=%d total_tokens=%d msg_count=%d events(step_start=%d token=%d tool_call=%d step_finish=%d reasoning=%d draft_updated=%d error=%d other=%d)",
-					sessionID, taskID, model, textBuf.Len(), totalTokens, msgCount,
-					evtCountStepStart, evtCountToken, evtCountToolCall, evtCountStepFinish, evtCountReasoning, evtCountDraftUpdated, evtCountError, evtCountOther)
-				errMsg := "AI 未返回内容，请重试"
-				evt = models.SessionEvent{
-					Type:      "error",
-					SessionID: sessionID,
-					TaskID:    taskID,
-					Error:     errMsg,
-				}
-			}
-		}
-
-		if evt.Type == "token" || evt.Type == "tool_call" || evt.Type == "step_finish" ||
-			evt.Type == "done" || evt.Type == "error" || evt.Type == "draft_updated" ||
-			evt.Type == "reasoning" {
-			if evt.Type == "error" && evt.Error != "" {
-				sm.appendTaskMessage(taskID, sessionID, "system", evt.Error, 0)
-			}
-			out := evt
-			if out.Type == "token" {
-				if writeDraftOnText {
-					out.Text = ""
-				} else if out.Text != "" {
+				out := evt
+				if out.Type == "token" && out.Text != "" {
 					out.Text = chatDisplayTextDelta(assistantText.String(), sessionDraftPath, out.Text)
 				}
-			}
-			if out.Type == "step_finish" && out.Text != "" {
-				out.Text = ChatDisplayText(out.Text, sessionDraftPath)
+				if out.Type == "step_finish" && out.Text != "" {
+					out.Text = ChatDisplayText(out.Text, sessionDraftPath)
+				}
 			}
 		}
+		cancel()
+
+		msgCount++
+		if !noContentDetected {
+			break
+		}
+		if attempt < maxRetries-1 {
+			logger.Warn(logging.WarnProcessStuck, "retrying session: attempt=%d/%d session=%s", attempt+1, maxRetries, sessionID)
+			time.Sleep(3 * time.Second)
+		}
+	}
+
+	if noContentDetected {
+		msg := "AI 未返回内容，请重试"
+		if !apiEverResponded && apiKey != "" {
+			logger.Info("key validation: no API response in any attempt, checking key...")
+			vCtx, vCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			if vErr := validateDeepseekKey(vCtx, apiKey); vErr != nil {
+				msg = fmt.Sprintf("API key 无效 (%v)，请检查 key 配置是否过期或额度不足", vErr)
+				logger.Error(logging.ErrSessionError, "API key validation failed: session=%s err=%v", sessionID, vErr)
+			} else {
+				msg = "AI 未返回内容（key 有效，可能是步配额耗尽），请重试"
+				logger.Info("key validation passed: session=%s (key valid)", sessionID)
+			}
+			vCancel()
+		}
+		sm.appendTaskMessage(taskID, sessionID, "system", msg, 0)
 	}
 
 	if sessionID != "" {
@@ -909,7 +964,6 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 		}
 	}
 
-	msgCount++
 	if sessionID != "" {
 		sess, err = sm.store.GetSession(taskID, sessionID)
 	}
@@ -979,7 +1033,7 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 		if info, err := os.Stat(draftPath); err == nil {
 			logger.Info("draft file exists: session=%s path=%s size=%d bytes", sessionID, draftPath, info.Size())
 		} else {
-			logger.Warn(logging.WarnProcessStuck, "draft file not found: session=%s path=%s assistant_persisted=%v text_buf_len=%d", sessionID, draftPath, assistantPersisted, textBuf.Len())
+			logger.Warn(logging.WarnProcessStuck, "draft file not found: session=%s path=%s assistant_persisted=%v", sessionID, draftPath, assistantPersisted)
 		}
 	}
 
@@ -1354,7 +1408,7 @@ func (sm *SessionManager) WakeTask(ctx context.Context, taskID string, req model
 		msg = adapter.BuildStartMessage(novelName, skill, req.Text, chapterNum)
 	}
 
-	go sm.runSessionLoop(context.Background(), sessionID, taskID, cwd, model, msg, "", true)
+	go sm.runSessionLoop(context.Background(), sessionID, taskID, cwd, model, msg, "")
 
 	return sess, nil
 }
@@ -1379,6 +1433,11 @@ func (sm *SessionManager) FillSessionsDraftSize(sessions []*models.Session) {
 		draftPath := filepath.Join(s.CWDPath, "current_draft.md")
 		if info, err := os.Stat(draftPath); err == nil {
 			s.DraftSize = info.Size()
+			if info.Size() > 0 {
+				if data, readErr := os.ReadFile(draftPath); readErr == nil {
+					s.ChapterTitle = store.ExtractChapterTitle(string(data))
+				}
+			}
 		}
 	}
 }
@@ -1572,6 +1631,15 @@ func (sm *SessionManager) CreateTaskDirect(req models.CreateTaskRequest) error {
 	return err
 }
 
+func (sm *SessionManager) SetSessionPostID(sessionID, postID string) error {
+	sess, _, err := sm.findSession(sessionID)
+	if err != nil {
+		return err
+	}
+	sess.PostID = postID
+	return sm.store.UpsertSessionInTask(sess)
+}
+
 func (sm *SessionManager) inferChapterNumber(taskID string) int {
 	task, err := sm.store.GetTask(taskID)
 	if err != nil {
@@ -1585,4 +1653,40 @@ func (sm *SessionManager) inferChapterNumber(taskID string) int {
 		return len(sessions)
 	}
 	return 1
+}
+
+func validateDeepseekKey(ctx context.Context, apiKey string) error {
+	body, _ := json.Marshal(map[string]interface{}{
+		"model": "deepseek-chat",
+		"messages": []map[string]string{
+			{"role": "user", "content": "hi"},
+		},
+		"max_tokens": 1,
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.deepseek.com/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create validation request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("API unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return fmt.Errorf("HTTP %d (auth failed)", resp.StatusCode)
+	}
+	if resp.StatusCode >= 500 {
+		return fmt.Errorf("HTTP %d (server error)", resp.StatusCode)
+	}
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	return nil
 }

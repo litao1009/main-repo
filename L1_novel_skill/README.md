@@ -23,7 +23,7 @@
 ├── chapter_prompt.md          # 写章prompt模板
 ├── self_check.md              # 章末自检模板
 ├── novel_metadata.json        # 小说元信息（书名/简介/封面路径）
-├── cover.png                  # 小说封面图（9:16, 576×1024）
+├── cover.png                  # 小说封面图（3:4, 768×1024）
 ├── chapters/                  # 章节存放目录
 │   ├── chapter_001.md
 │   └── ...
@@ -43,5 +43,5 @@
 
 ## 封面生成
 
-使用 [Pollinations.ai](https://pollinations.ai) 免费生图API生成小说封面（9:16比例，无需API Key）。
+使用 [Pollinations.ai](https://pollinations.ai) 免费生图API生成小说封面（3:4比例，无需API Key）。
 详见 SKILL.md 中的"封面生成"章节。

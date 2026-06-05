@@ -200,7 +200,8 @@ export default function NewTaskPage() {
   const [selectedAccountId, setSelectedAccountId] = useState("")
   const [selectedSkillId, setSelectedSkillId] = useState("")
   const [accountLoading, setAccountLoading] = useState(false)
-  const [skillsLoading, setSkillsLoading] = useState(false)
+  const [skillsBusy, setSkillsBusy] = useState(false)
+  const [showSkillSkeleton, setShowSkillSkeleton] = useState(false)
   const [isAuto, setIsAuto] = useState(true)
   const [selectedTags, setSelectedTags] = useState<SelectedTags>(getEmptySelection())
   const [collapsedCats, setCollapsedCats] = useState<Record<string, boolean>>({ main: true, theme: true, role: true, plot: true })
@@ -220,30 +221,58 @@ export default function NewTaskPage() {
   }, [])
 
   const lastFetchedPlatform = useRef("")
+  const lastSkillCountRef = useRef(2)
+  const skillsSkeletonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  /** 切换平台时同步清空，避免 useEffect 前一帧仍显示旧账号与选中边框 */
-  const resetPlatformDependentState = useCallback(() => {
-    setSelectedAccountId("")
-    setSelectedSkillId("")
-    setAccounts([])
-    setSkills([])
-    setAccountLoading(true)
-    setSkillsLoading(true)
+  const SKILLS_SKELETON_DELAY_MS = 200
+
+  const beginSkillsFetch = useCallback(() => {
+    setSkillsBusy(true)
+    setShowSkillSkeleton(false)
+    if (skillsSkeletonTimerRef.current) clearTimeout(skillsSkeletonTimerRef.current)
+    skillsSkeletonTimerRef.current = setTimeout(() => {
+      setShowSkillSkeleton(true)
+      skillsSkeletonTimerRef.current = null
+    }, SKILLS_SKELETON_DELAY_MS)
+  }, [])
+
+  const endSkillsFetch = useCallback(() => {
+    if (skillsSkeletonTimerRef.current) {
+      clearTimeout(skillsSkeletonTimerRef.current)
+      skillsSkeletonTimerRef.current = null
+    }
+    setSkillsBusy(false)
+    setShowSkillSkeleton(false)
+  }, [])
+
+  useEffect(() => () => {
+    if (skillsSkeletonTimerRef.current) clearTimeout(skillsSkeletonTimerRef.current)
   }, [])
 
   useEffect(() => {
     if (lastFetchedPlatform.current === platform) return
     lastFetchedPlatform.current = platform
-    resetPlatformDependentState()
+    setSelectedAccountId("")
+    setSelectedSkillId("")
+    setAccounts([])
+    setAccountLoading(true)
+    beginSkillsFetch()
     fetchAccounts(platform)
       .then(accs => setAccounts(Array.isArray(accs) ? accs : []))
       .catch(() => setAccounts([]))
       .finally(() => setAccountLoading(false))
     allocSkill({ platform })
-      .then(s => setSkills(s))
-      .catch(() => toast.error("加载创作方案失败"))
-      .finally(() => setSkillsLoading(false))
-  }, [platform, resetPlatformDependentState])
+      .then((s) => {
+        const list = Array.isArray(s) ? s : []
+        setSkills(list)
+        lastSkillCountRef.current = Math.max(2, list.length)
+      })
+      .catch(() => {
+        toast.error("加载创作方案失败")
+        setSkills([])
+      })
+      .finally(() => endSkillsFetch())
+  }, [platform, beginSkillsFetch, endSkillsFetch])
 
   const handleToggleTag = useCallback((catKey: TagCategoryKey, tag: TagItem) => {
     setSelectedTags(prev => {
@@ -348,7 +377,10 @@ export default function NewTaskPage() {
                   key={opt.value} type="button"
                   onClick={() => {
                     if (opt.value === platform) return
-                    resetPlatformDependentState()
+                    setSelectedAccountId("")
+                    setSelectedSkillId("")
+                    setAccounts([])
+                    setAccountLoading(true)
                     setPlatform(opt.value)
                   }}
                   className={cn(
@@ -456,18 +488,23 @@ export default function NewTaskPage() {
         {/* 创作方案 */}
         <div>
           <FieldHeader label="创作小说" required hint="单选" />
-          {skillsLoading ? (
-            <div className={SKILL_CARD_GRID}>
-              <SkillCardSkeleton />
-              <SkillCardSkeleton />
-              <SkillCardSkeleton />
-              <SkillCardSkeleton />
-              <SkillCardSkeleton />
+          {showSkillSkeleton && skillsBusy ? (
+            <div className={SKILL_CARD_GRID} aria-busy="true">
+              {Array.from({ length: lastSkillCountRef.current }, (_, i) => (
+                <SkillCardSkeleton key={i} />
+              ))}
             </div>
-          ) : skills.length === 0 ? (
+          ) : skills.length === 0 && !skillsBusy ? (
             <p className="flex h-9 items-center text-sm text-slate-400">该平台暂无可用创作方案</p>
-          ) : (
-            <div className={SKILL_CARD_GRID}>
+          ) : skills.length > 0 ? (
+            <div
+              className={cn(
+                SKILL_CARD_GRID,
+                "transition-opacity duration-200",
+                skillsBusy && "pointer-events-none opacity-50",
+              )}
+              aria-busy={skillsBusy}
+            >
               {skills.map((skill) => (
                 <SkillSelectCard
                   key={skill.skill_id}
@@ -479,7 +516,7 @@ export default function NewTaskPage() {
                 />
               ))}
             </div>
-          )}
+          ) : null}
         </div>
 
         {/* 分类标签 / 作品描述 */}

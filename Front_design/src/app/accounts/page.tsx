@@ -306,37 +306,37 @@ export default function AccountsPage() {
     }
   })
 
-  /** Cookie 状态徽标 */
+  /** Cookie 状态徽标；检测中沿用上次结果并弱化，避免与底栏刷新动画重复 */
   function StatusBadge({ accountId }: { accountId: string }) {
     const status = cookieStatusMap[accountId]
     const entry = getCachedEntry(accountId)
+    const isChecking = status === 'checking'
+    const displayStatus: CookieHealthStatus | 'unknown' = isChecking
+      ? (entry?.status ?? 'unknown')
+      : (status ?? 'unknown')
     const title = entry
-      ? `上次检测：${formatDate(new Date(entry.checkedAt).toISOString())}${entry.source === 'heuristic' ? '（估算）' : ''}`
-      : ''
+      ? `上次检测：${formatDate(new Date(entry.checkedAt).toISOString())}${entry.source === 'heuristic' ? '（估算）' : ''}${isChecking ? ' · 正在重新检测' : ''}`
+      : isChecking ? '正在检测' : ''
 
-    if (status === 'checking') {
+    const badgeClass =
+      "inline-flex min-w-[5.75rem] items-center justify-center px-2.5 py-1 text-xs font-medium rounded-md border transition-opacity"
+
+    if (displayStatus === 'valid') {
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-md" title={title}>
-          <Loader2 size={10} className="animate-spin" /> 检测中
-        </span>
-      )
-    }
-    if (status === 'valid') {
-      return (
-        <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-md" title={title}>
+        <span className={`${badgeClass} text-emerald-600 bg-emerald-50 border-emerald-100 ${isChecking ? 'opacity-60' : ''}`} title={title}>
           状态: 有效
         </span>
       )
     }
-    if (status === 'expired') {
+    if (displayStatus === 'expired') {
       return (
-        <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium text-rose-600 bg-rose-50 border border-rose-200 rounded-md" title={title}>
+        <span className={`${badgeClass} text-rose-600 bg-rose-50 border-rose-200 ${isChecking ? 'opacity-60' : ''}`} title={title}>
           状态: 失效
         </span>
       )
     }
     return (
-      <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium text-slate-400 bg-slate-50 border border-slate-200 rounded-md" title={title}>
+      <span className={`${badgeClass} text-slate-400 bg-slate-50 border-slate-200 ${isChecking ? 'opacity-60' : ''}`} title={title}>
         状态: 未知
       </span>
     )
@@ -453,46 +453,57 @@ export default function AccountsPage() {
                           <StatusBadge accountId={acc.account_id} />
                         </div>
 
-                        {/* 账号名 + 打开（同行） */}
+                        {/* 账号名 + 打开（同行）；右侧固定 36px 占位，避免检测时按钮卸载导致抖动 */}
                         <div className="flex items-center justify-between gap-3 mb-5">
                           <h4 className="text-base font-bold text-slate-900 leading-snug line-clamp-2 break-all min-w-0">
                             {acc.masked_display}
                           </h4>
-                          {status === 'valid' && (
-                            <button
-                              onClick={() => handleOpenFanqie(acc)}
-                              disabled={!!injectStatusMap[acc.account_id]}
-                              className="flex-shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full bg-orange-500 hover:bg-orange-600 text-white disabled:opacity-50 transition-colors shadow-sm shadow-orange-200"
-                            >
-                              {injectStatusMap[acc.account_id] === 'injecting'
-                                ? <Loader2 size={15} className="animate-spin" />
-                                : <ExternalLink size={15} />
-                              }
-                            </button>
-                          )}
-                          {isExpired && (
-                            <span className="flex-shrink-0 text-xs text-rose-400 pt-0.5"></span>
-                          )}
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center">
+                            {(status === 'valid' || (status === 'checking' && entry?.status === 'valid')) ? (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenFanqie(acc)}
+                                disabled={status === 'checking' || !!injectStatusMap[acc.account_id]}
+                                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-orange-500 text-white shadow-sm shadow-orange-200 transition-colors hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {injectStatusMap[acc.account_id] === 'injecting'
+                                  ? <Loader2 size={15} className="animate-spin" />
+                                  : <ExternalLink size={15} />
+                                }
+                              </button>
+                            ) : null}
+                          </div>
                         </div>
 
                         {/* 卡底：上次检测 + 操作 */}
                         <div className={`mt-auto pt-4 border-t flex justify-between items-center ${isExpired ? "border-rose-100" : "border-slate-100"}`}>
                           {/* 上次检测时间 + 刷新 */}
-                          <div className="flex items-center gap-1.5">
-                            <span className={`text-xs ${isExpired ? "text-rose-300" : "text-slate-400"}`}>
-                              {entry
-                                ? `上次检测：${formatRelativeTime(new Date(entry.checkedAt).toISOString())}`
-                                : "等待检测"
-                              }
-                            </span>
-                            <button
-                              title="重新检测"
-                              onClick={() => recheckOne(acc.account_id)}
-                              disabled={status === 'checking'}
-                              className="text-slate-300 hover:text-slate-500 disabled:opacity-30 transition-colors"
-                            >
-                              <RefreshCw size={11} />
-                            </button>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            {status === 'checking' ? (
+                              <>
+                                <span className={`text-xs truncate ${isExpired ? "text-rose-300" : "text-slate-400"}`}>
+                                  正在检测…
+                                </span>
+                                <RefreshCw size={11} className="shrink-0 animate-spin text-slate-400" aria-hidden />
+                              </>
+                            ) : (
+                              <>
+                                <span className={`text-xs truncate ${isExpired ? "text-rose-300" : "text-slate-400"}`}>
+                                  {entry
+                                    ? `上次检测：${formatRelativeTime(new Date(entry.checkedAt).toISOString())}`
+                                    : "等待检测"
+                                  }
+                                </span>
+                                <button
+                                  type="button"
+                                  title="重新检测"
+                                  onClick={() => recheckOne(acc.account_id)}
+                                  className="shrink-0 text-slate-300 transition-colors hover:text-slate-500"
+                                >
+                                  <RefreshCw size={11} />
+                                </button>
+                              </>
+                            )}
                           </div>
 
                           {/* 操作按钮组 */}

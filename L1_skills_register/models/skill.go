@@ -22,6 +22,7 @@ type SkillPackage struct {
 	ExamplesPath    string                 `yaml:"examples_path" json:"examples_path,omitempty"`
 	CoverImage      string                 `yaml:"-" json:"-"`
 	SkillDirectory  string                 `yaml:"-" json:"-"`
+	Roles           string                 `yaml:"-" json:"-"`
 }
 
 type InputDef struct {

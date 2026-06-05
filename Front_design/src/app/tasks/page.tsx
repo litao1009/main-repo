@@ -12,17 +12,10 @@ import { buildTaskDetailHref } from "@/lib/task-navigation"
 import { FileText, Plus, Search, Loader2, AlertCircle, Layers } from "lucide-react"
 import Link from "next/link"
 import { cn, formatChapterLabel } from "@/lib/utils"
-
-const PLATFORM_LABELS: Record<string, { label: string; color: string }> = {
-  fanqie:  { label: "番茄小说", color: "text-red-600 bg-red-50 border-red-100" },
-  zhulang: { label: "逐浪网",   color: "text-blue-600 bg-blue-50 border-blue-100" },
-  xhs:     { label: "小红书",   color: "text-rose-600 bg-rose-50 border-rose-100" },
-  wechat:  { label: "公众号",   color: "text-green-600 bg-green-50 border-green-100" },
-  yuewen:  { label: "阅文",     color: "text-purple-600 bg-purple-50 border-purple-100" },
-}
+import { getPlatformBadgeStyle } from "@/lib/platform-label"
 
 function platformBadge(p: string) {
-  const conf = PLATFORM_LABELS[p] ?? { label: p, color: "text-slate-600 bg-slate-100 border-slate-200" }
+  const conf = getPlatformBadgeStyle(p)
   return (
     <span className={cn("px-2.5 py-1 text-[10px] font-bold tracking-wide border rounded-md", conf.color)}>
       {conf.label}

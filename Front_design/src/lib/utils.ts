@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
+import type { BookChapterPhase } from "@/types"
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -51,15 +52,36 @@ export function toChineseNumber(n: number): string {
 }
 
 /** 章节展示：第一章、第二章… */
-/** AI 回复暗示章节草稿已更新时，应刷新章节列表 */
-export function shouldRefreshBookInfoAfterAiReply(text: string) {
-  const t = text.trim()
-  if (!t) return false
-  return /的内容已写入草稿|章节内容已写入草稿|已写入\s*`?current_draft|已完成[。.!！]?\s*第|已完成.*章.*写入/.test(t)
-}
-
 export function formatChapterLabel(chapterNumber: number): string {
   return `第${toChineseNumber(chapterNumber)}章`
+}
+
+/** 卷名展示：第一卷；兼容「一卷」等缺少「第」的写法 */
+export function formatVolumeLabel(volumeName: string): string {
+  const v = volumeName.trim()
+  if (!v) return ""
+  if (/^第.+卷$/.test(v)) return v
+  const m = v.match(/^([0-9一二三四五六七八九十百千零两\d]+)卷$/)
+  if (m) return `第${m[1]}卷`
+  return v
+}
+
+/** 解析 book/info 返回的章节 phase（兼容仅含 published 布尔字段的旧响应） */
+export function resolveBookChapterPhase(ch: {
+  phase?: string
+  published?: boolean
+}): BookChapterPhase | null {
+  if (ch.phase === "published" || ch.phase === "draft") return ch.phase
+  if (ch.published === true) return "published"
+  if (ch.published === false) return "draft"
+  return null
+}
+
+export function isBookChapterPublished(ch: {
+  phase?: string
+  published?: boolean
+}): boolean {
+  return resolveBookChapterPhase(ch) === "published"
 }
 
 /**

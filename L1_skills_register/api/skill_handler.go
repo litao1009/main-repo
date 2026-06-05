@@ -3,7 +3,13 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"L1_skills_register/models"
@@ -17,13 +23,17 @@ type Handler struct {
 	reg          registry.Registry
 	internalAuth string
 	skillDir     string
+	coverBin     string
+	fontsDir     string
 }
 
-func NewHandler(reg registry.Registry, internalAuth, skillDir string) *Handler {
+func NewHandler(reg registry.Registry, internalAuth, skillDir, coverBin, fontsDir string) *Handler {
 	return &Handler{
 		reg:          reg,
 		internalAuth: internalAuth,
 		skillDir:     skillDir,
+		coverBin:     coverBin,
+		fontsDir:     fontsDir,
 	}
 }
 
@@ -323,6 +333,11 @@ func (h *Handler) handleSkillByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(parts) == 2 && parts[1] == "cover-rendered" {
+		h.handleCoverRendered(w, r, skillID)
+		return
+	}
+
 	if !h.requireInternalAuth(r) {
 		dr := struct {
 			SkillID          string                 `json:"skill_id"`
@@ -336,6 +351,7 @@ func (h *Handler) handleSkillByID(w http.ResponseWriter, r *http.Request) {
 			ScriptsPath      string                 `json:"scripts_path,omitempty"`
 			TemplatesPath    string                 `json:"templates_path,omitempty"`
 			ExamplesPath     string                 `json:"examples_path,omitempty"`
+			Roles            string                 `json:"roles,omitempty"`
 		}{
 			SkillID: skillID,
 		}
@@ -360,6 +376,7 @@ func (h *Handler) handleSkillByID(w http.ResponseWriter, r *http.Request) {
 		dr.ScriptsPath = pkg.ScriptsPath
 		dr.TemplatesPath = pkg.TemplatesPath
 		dr.ExamplesPath = pkg.ExamplesPath
+		dr.Roles = pkg.Roles
 
 		writeJSON(w, http.StatusOK, dr)
 		return
@@ -387,6 +404,7 @@ func (h *Handler) handleSkillByID(w http.ResponseWriter, r *http.Request) {
 		"name":              pkg.Name,
 		"description":       pkg.Description,
 		"category":          pkg.Category,
+		"roles":             pkg.Roles,
 		"model_recommended": pkg.ModelRecommended,
 		"prompt_content":    pkg.PromptContent,
 		"output_schema":     pkg.OutputSchema,
@@ -448,6 +466,83 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, models.ApiError{Error: code, Message: message})
+}
+
+func (h *Handler) handleCoverRendered(w http.ResponseWriter, r *http.Request, skillID string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET allowed")
+		return
+	}
+
+	author := r.URL.Query().Get("author")
+	if author == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "author query param required")
+		return
+	}
+
+	logger := logging.FromContext(r.Context())
+
+	pkg, err := h.reg.Get(r.Context(), skillID, "")
+	if err != nil {
+		if logger != nil {
+			logger.Error(logging.ErrNotFound, "cover-rendered: skill %s not found: %v", skillID, err)
+		}
+		writeError(w, http.StatusNotFound, "not_found", "skill not found: "+skillID)
+		return
+	}
+
+	baseImagePath := filepath.Join(h.skillDir, skillID, "cover.png")
+	if _, err := os.Stat(baseImagePath); os.IsNotExist(err) {
+		baseImagePath = filepath.Join(pkg.SkillDirectory, "cover.png")
+	}
+	if _, err := os.Stat(baseImagePath); os.IsNotExist(err) {
+		log.Printf("[cover-rendered] skill=%s base cover image not found: %s", skillID, baseImagePath)
+		if logger != nil {
+			logger.Error(logging.ErrNotFound, "cover-rendered: skill=%s cover.png not found", skillID)
+		}
+		writeError(w, http.StatusNotFound, "not_found", "cover image not found for skill: "+skillID)
+		return
+	}
+
+	outputPath := filepath.Join(os.TempDir(), fmt.Sprintf("%s_rendered.png", skillID))
+	defer os.Remove(outputPath)
+
+	renderName := r.URL.Query().Get("name")
+	if renderName == "" {
+		renderName = pkg.Name
+	}
+	cmd := exec.Command(h.coverBin,
+		"-image", baseImagePath,
+		"-name", renderName,
+		"-writer", author,
+		"-out", outputPath,
+		"-fonts", h.fontsDir,
+	)
+	output, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		log.Printf("[cover-rendered] skill=%s render failed: %v, output=%s", skillID, runErr, string(output))
+		if logger != nil {
+			logger.Error(logging.ErrInternal, "cover-rendered: render failed for skill=%s: %v", skillID, runErr)
+		}
+		writeError(w, http.StatusInternalServerError, "render_failed", "cover rendering failed: "+runErr.Error())
+		return
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		log.Printf("[cover-rendered] skill=%s read output failed: %v", skillID, err)
+		if logger != nil {
+			logger.Error(logging.ErrInternal, "cover-rendered: read output failed for skill=%s: %v", skillID, err)
+		}
+		writeError(w, http.StatusInternalServerError, "render_failed", "failed to read rendered cover")
+		return
+	}
+
+	log.Printf("[cover-rendered] skill=%s success, size=%d bytes", skillID, len(data))
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
 }
 
 func (h *Handler) handleAllocSkill(w http.ResponseWriter, r *http.Request) {

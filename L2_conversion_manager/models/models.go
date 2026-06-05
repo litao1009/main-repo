@@ -55,12 +55,14 @@ type Session struct {
 	TotalTokens   int           `json:"total_tokens"`
 	DraftVersion  int           `json:"draft_version"`
 	DraftSize     int64         `json:"draft_size,omitempty"`
+	ChapterTitle  string        `json:"chapter_title,omitempty"`
 	NovelName     string        `json:"novel_name,omitempty"`
 	VolumeName    string        `json:"volume_name,omitempty"`
 	ChapterNumber int           `json:"chapter_number"`
 	CreatedAt     time.Time     `json:"created_at"`
 	LastActiveAt  time.Time     `json:"last_active_at"`
 	ArchivedAt    *time.Time    `json:"archived_at,omitempty"`
+	PostID        string        `json:"post_id,omitempty"`
 	Episodes      []Episode     `json:"episodes,omitempty"`
 }
 
@@ -85,6 +87,7 @@ type SessionEvent struct {
 	ToolArgs     interface{} `json:"tool_args,omitempty"`
 	ToolResult   string      `json:"tool_result,omitempty"`
 	DraftPath    string      `json:"draft_path,omitempty"`
+	DraftSize    int64       `json:"draft_size,omitempty"`
 	Tokens       *TokenInfo  `json:"tokens,omitempty"`
 	Error        string      `json:"error,omitempty"`
 	Reason       string      `json:"reason,omitempty"`

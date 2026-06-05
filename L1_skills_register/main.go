@@ -20,6 +20,8 @@ func main() {
 	ossDir := flag.String("oss-dir", "/tmp/skills_data", "OSS storage directory")
 	internalAuth := flag.String("internal-auth", "", "Internal auth token (empty = no auth)")
 	skillDir := flag.String("skill-dir", "fixtures", "Directory to scan for skill packages")
+	coverBin := flag.String("cover-bin", "/home/claw_studios/code/L1_novel_cover_png/novelcover_pure", "Path to novel_cover_png binary")
+	fontsDir := flag.String("fonts-dir", "/home/claw_studios/code/L1_novel_cover_png/fonts", "Directory containing font files")
 	flag.Parse()
 
 	if err := os.MkdirAll(*ossDir, 0755); err != nil {
@@ -53,7 +55,7 @@ func main() {
 		}
 	}
 
-	handler := api.NewHandler(reg, *internalAuth, absSkillDir)
+	handler := api.NewHandler(reg, *internalAuth, absSkillDir, *coverBin, *fontsDir)
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)

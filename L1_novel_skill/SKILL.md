@@ -53,7 +53,7 @@ use_skill("novel-shadow-creator")
 
 **元数据文件（2个）：**
 11. `novel_metadata.json` — 小说元信息（书名、简介、封面路径）
-12. `cover.png` — 小说封面图（9:16比例，576×1024）
+12. `cover.png` — 小说封面图（3:4比例，768×1024）
 
 ### Phase D：交付
 告知用户子Skill路径与使用方式。
@@ -85,7 +85,7 @@ use_skill("novel-shadow-creator")
   "protagonist": "主角名 (Name)",
   "setting": "故事背景",
   "cover_generated_by": "Pollinations.ai",
-  "cover_resolution": "576x1024 (9:16)",
+  "cover_resolution": "768x1024 (3:4)",
   "created_at": "YYYY-MM-DD"
 }
 ```
@@ -96,19 +96,19 @@ use_skill("novel-shadow-creator")
 
 ### API格式
 ```
-https://image.pollinations.ai/prompt/{URL-encoded-prompt}?width=576&height=1024&nologo=true
+https://image.pollinations.ai/prompt/{URL-encoded-prompt}?width=768&height=1024&nologo=true
 ```
 
 ### 参数说明
 | 参数 | 值 | 说明 |
 |------|----|------|
-| width | 576 | 宽度（9:16比例） |
-| height | 1024 | 高度（9:16比例） |
+| width | 768 | 宽度（3:4比例） |
+| height | 1024 | 高度（3:4比例） |
 | nologo | true | 去除水印 |
 | model | flux (默认) | 生成模型 |
 
 ### 封面Prompt编写原则
-1. 必须以 `Anime book cover illustration, 9:16 vertical` 开头
+1. 必须以 `Anime book cover illustration, 3:4 vertical` 开头
 2. 描述主角外貌特征和姿态
 3. 描述场景/背景氛围
 4. 指定色调和美术风格
@@ -118,7 +118,7 @@ https://image.pollinations.ai/prompt/{URL-encoded-prompt}?width=576&height=1024&
 ### 生成示例
 ```bash
 curl -s -o cover.png \
-  "https://image.pollinations.ai/prompt/Anime%20book%20cover%20illustration%2C%20916%20vertical.%20{具体描述}.%20Chinese%20light%20novel%20cover%20art%20style?width=576&height=1024&nologo=true"
+  "https://image.pollinations.ai/prompt/Anime%20book%20cover%20illustration%2C%2034%20vertical.%20{具体描述}.%20Chinese%20light%20novel%20cover%20art%20style?width=768&height=1024&nologo=true"
 ```
 
 ### 注意事项

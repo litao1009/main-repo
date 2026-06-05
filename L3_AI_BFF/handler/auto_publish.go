@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"regexp"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -28,17 +31,18 @@ const (
 )
 
 type AutoPublishManager struct {
-	jobs             map[string]*AutoPublishJob
-	mu               sync.RWMutex
-	sessionMgrURL    string
-	workflowURL      string
-	accountURL       string
-	httpClient       *http.Client
-	stoppedTasksFile string
-	stoppedTasks     map[string]bool
-	stoppedMu        sync.RWMutex
-	fanqieAdapter    *c1.FanqiePublishAdapter
-	a1BaseURL        string
+	jobs              map[string]*AutoPublishJob
+	mu                sync.RWMutex
+	sessionMgrURL     string
+	workflowURL       string
+	accountURL        string
+	skillRegistryURL  string
+	httpClient        *http.Client
+	stoppedTasksFile  string
+	stoppedTasks      map[string]bool
+	stoppedMu         sync.RWMutex
+	fanqieAdapter     *c1.FanqiePublishAdapter
+	a1BaseURL         string
 }
 
 type AutoPublishJob struct {
@@ -54,18 +58,20 @@ type AutoPublishJob struct {
 	DraftVersion  int
 	Status        string
 	WorkID        string
-	stopCh        chan struct{}
+	stopCtx       context.Context
+	stopCancel    context.CancelFunc
 	finishCh      chan struct{}
 	mu            sync.Mutex
 	createdAt     time.Time
 }
 
-func NewAutoPublishManager(sessionMgrURL, workflowURL, accountURL, stoppedTasksFile string, fanqieAdapter *c1.FanqiePublishAdapter, a1BaseURL string) *AutoPublishManager {
+func NewAutoPublishManager(sessionMgrURL, workflowURL, accountURL, skillRegistryURL, stoppedTasksFile string, fanqieAdapter *c1.FanqiePublishAdapter, a1BaseURL string) *AutoPublishManager {
 	m := &AutoPublishManager{
 		jobs:             make(map[string]*AutoPublishJob),
 		sessionMgrURL:    sessionMgrURL,
 		workflowURL:      workflowURL,
 		accountURL:       accountURL,
+		skillRegistryURL: skillRegistryURL,
 		stoppedTasksFile: stoppedTasksFile,
 		stoppedTasks:     make(map[string]bool),
 		fanqieAdapter:    fanqieAdapter,
@@ -196,6 +202,7 @@ func (m *AutoPublishManager) StartAutoPublishInternal(uid, role string, req mode
 		chapterNumber = taskInfo.SessionCount
 	}
 
+	stopCtx, stopCancel := context.WithCancel(context.Background())
 	job := &AutoPublishJob{
 		TaskID:        req.TaskID,
 		UserID:        uid,
@@ -208,7 +215,8 @@ func (m *AutoPublishManager) StartAutoPublishInternal(uid, role string, req mode
 		ChapterNumber: chapterNumber,
 		DraftVersion:  taskInfo.SessionCount,
 		Status:        "running",
-		stopCh:        make(chan struct{}),
+		stopCtx:       stopCtx,
+		stopCancel:    stopCancel,
 		finishCh:      make(chan struct{}, 1),
 		createdAt:     time.Now(),
 	}
@@ -373,10 +381,7 @@ func (m *AutoPublishManager) StopAutoPublish() gin.HandlerFunc {
 
 		m.RecordStoppedTask(req.TaskID)
 
-		select {
-		case job.stopCh <- struct{}{}:
-		default:
-		}
+		job.stopCancel()
 
 		if logger != nil {
 			logger.Info("自动发布已停止: task=%s", req.TaskID)
@@ -498,7 +503,7 @@ func (m *AutoPublishManager) FinishAutoPublish() gin.HandlerFunc {
 func (m *AutoPublishManager) autoPublishLoop(job *AutoPublishJob) {
 	for {
 		select {
-		case <-job.stopCh:
+		case <-job.stopCtx.Done():
 			m.updateJobStatus(job.TaskID, "stopped")
 			log.Printf("[auto_publish] task=%s 收到停止信号,退出循环", job.TaskID)
 			return
@@ -514,8 +519,9 @@ func (m *AutoPublishManager) autoPublishLoop(job *AutoPublishJob) {
 
 		if err := m.generateChapter(job, false); err != nil {
 			log.Printf("[auto_publish] task=%s 章节生成/发布失败: %v, 1分钟后重试", job.TaskID, err)
+
 			select {
-			case <-job.stopCh:
+			case <-job.stopCtx.Done():
 				m.updateJobStatus(job.TaskID, "stopped")
 				return
 			case <-job.finishCh:
@@ -527,11 +533,27 @@ func (m *AutoPublishManager) autoPublishLoop(job *AutoPublishJob) {
 				return
 			case <-time.After(1 * time.Minute):
 			}
+
+			var pubErr *publishRetryError
+			if errors.As(err, &pubErr) {
+				log.Printf("[auto_publish] task=%s 仅重试发布步骤 draftItemID=%s chapter=%s", job.TaskID, pubErr.draftItemID, pubErr.chapterTitle)
+				if retryErr := m.retryPublishOnly(job, pubErr.sessionID, pubErr.draftItemID, pubErr.chapterTitle, pubErr.volume); retryErr != nil {
+					log.Printf("[auto_publish] task=%s 重试发布仍失败: %v, 跳过此章", job.TaskID, retryErr)
+				}
+			}
+
+			var saveErr *saveDraftRetryError
+			if errors.As(err, &saveErr) {
+				log.Printf("[auto_publish] task=%s 重试存草稿+发布 chapter=%d title=%s", job.TaskID, saveErr.chapterNum, saveErr.chapterTitle)
+				if retryErr := m.retrySaveAndPublish(job, saveErr.sessionID, saveErr.draft, saveErr.chapterTitle, saveErr.chapterNum, saveErr.volume); retryErr != nil {
+					log.Printf("[auto_publish] task=%s 重试存草稿+发布仍失败: %v, 跳过此章", job.TaskID, retryErr)
+				}
+			}
 			continue
 		}
 
 		select {
-		case <-job.stopCh:
+		case <-job.stopCtx.Done():
 			m.updateJobStatus(job.TaskID, "stopped")
 			log.Printf("[auto_publish] task=%s 收到停止信号,退出循环", job.TaskID)
 			return
@@ -582,6 +604,8 @@ func (m *AutoPublishManager) generateChapter(job *AutoPublishJob, isFinale bool)
 
 	log.Printf("[auto_publish] task=%s 平台状态: workId=%s published=%d drafts=%d",
 		taskID, platformInfo.WorkID, len(platformInfo.PublishedChapters), len(platformInfo.Drafts))
+
+	isNewBook := platformInfo.NewlyCreated
 
 	var lastPublished *c1.FanqieLastPublished
 	if platformInfo.LastPublished != nil {
@@ -669,6 +693,17 @@ func (m *AutoPublishManager) generateChapter(job *AutoPublishJob, isFinale bool)
 
 	log.Printf("[auto_publish] task=%s AI 生成完成: title=%s contentLen=%d", taskID, chapterTitle, len(draft))
 
+	if chapterTitle == "" {
+		chapterTitle = fallbackChapterTitle(draft)
+		log.Printf("[auto_publish] task=%s 标题为空，从正文生成兜底标题: %s", taskID, chapterTitle)
+	}
+
+	// ③.5 新书：立即设置书籍信息（不依赖 save_draft 成功，避免 save_draft 失败导致错过触发窗口）
+	if isNewBook {
+		log.Printf("[auto_publish] task=%s 检测到新书, 开始设置书籍信息", taskID)
+		m.setNewBookInfo(job, cred, platformInfo, novelName)
+	}
+
 	// ④ 推到草稿箱
 	log.Printf("[auto_publish] task=%s 存草稿到平台草稿箱 title=%s chapter=%d", taskID, chapterTitle, nextChapter)
 
@@ -677,7 +712,14 @@ func (m *AutoPublishManager) generateChapter(job *AutoPublishJob, isFinale bool)
 		if saveResult.ErrorCode == c1.ErrCodeDailyLimit {
 			return fmt.Errorf("save draft: DAILY_LIMIT: %s", saveResult.ErrorMessage)
 		}
-		return fmt.Errorf("save draft: %s (code=%s)", saveResult.ErrorMessage, saveResult.ErrorCode)
+		return &saveDraftRetryError{
+			sessionID:    sessionID,
+			draft:        draft,
+			chapterTitle: chapterTitle,
+			chapterNum:   nextChapter,
+			volume:       nextVolume,
+			err:          fmt.Errorf("save draft: %s (code=%s)", saveResult.ErrorMessage, saveResult.ErrorCode),
+		}
 	}
 	log.Printf("[auto_publish] task=%s 存草稿成功: title=%s", taskID, chapterTitle)
 
@@ -686,44 +728,50 @@ func (m *AutoPublishManager) generateChapter(job *AutoPublishJob, isFinale bool)
 	// ⑤ 从草稿箱推发布
 	log.Printf("[auto_publish] task=%s 从草稿箱推发布 title=%s chapter=%d", taskID, chapterTitle, nextChapter)
 
-	platformInfo2, pubErr2 := m.fanqieAdapter.GetPlatformInfo(job.ctx(), novelName, cred, job.WorkID)
-	var draftItemID string
-	if pubErr2 != nil {
-		log.Printf("[auto_publish] task=%s 获取平台状态失败(发布前): %s", taskID, pubErr2.ErrorMessage)
-	} else {
-		for _, d := range platformInfo2.Drafts {
+	// 优先使用 save_draft 返回的 draftItemId（从页面 URL 精确提取），
+	// 失败时回退到 get_platform_info → draft_list API 匹配
+	draftItemID := saveResult.DraftItemID
+	if draftItemID == "" {
+		platformInfo2, pubErr2 := m.fanqieAdapter.GetPlatformInfo(job.ctx(), novelName, cred, job.WorkID)
+		if pubErr2 != nil {
+			log.Printf("[auto_publish] task=%s 获取平台状态失败(发布前): %s", taskID, pubErr2.ErrorMessage)
+		} else {
+			for _, d := range platformInfo2.Drafts {
 				if d.ChapterNumber == nextChapter {
 					draftItemID = d.ItemID
 					break
 				}
 			}
+		}
 	}
 
 	pubResult := m.fanqieAdapter.PublishDraft(job.ctx(), chapterTitle, novelName, nextVolume, cred, job.WorkID, draftItemID)
 	if pubResult.Status != "ok" {
 		log.Printf("[auto_publish] task=%s 发布草稿失败: %s (code=%s)", taskID, pubResult.ErrorMessage, pubResult.ErrorCode)
-		return fmt.Errorf("publish draft: %s (code=%s)", pubResult.ErrorMessage, pubResult.ErrorCode)
+		return &publishRetryError{
+			sessionID:    sessionID,
+			draftItemID:  draftItemID,
+			chapterTitle: chapterTitle,
+			volume:       nextVolume,
+			err:          fmt.Errorf("publish draft: %s (code=%s)", pubResult.ErrorMessage, pubResult.ErrorCode),
+		}
 	}
 
 	log.Printf("[auto_publish] task=%s 发布草稿成功: title=%s postId=%s", taskID, chapterTitle, pubResult.PostID)
 
-	m.updatePublishedCount(job)
+	if pubResult.PostID != "" && pubResult.PostID != job.WorkID {
+		m.updatePublishedCount(job)
+		m.saveSessionPostID(job.TaskID, sessionID, pubResult.PostID)
+	} else {
+		log.Printf("[auto_publish] task=%s postId 无效(workId=%s)，跳过发布计数", taskID, job.WorkID)
+	}
 
 	log.Printf("[auto_publish] task=%s ===== 章节生成完成 chapter=%d =====", taskID, nextChapter)
 	return nil
 }
 
-// ctx 从 job.stopCh 创建 context，用于 fanqieAdapter 的超时/取消控制。
 func (job *AutoPublishJob) ctx() context.Context {
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		select {
-		case <-job.stopCh:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-	return ctx
+	return job.stopCtx
 }
 
 // getFanqieCredential 从 A1 密钥库获取 fanqie 平台的 cookie。
@@ -826,11 +874,13 @@ func (m *AutoPublishManager) wakeTask(job *AutoPublishJob, isFinale bool) (strin
 	volName := job.VolumeName
 	novelName := job.NovelName
 	draftVer := job.DraftVersion
+	skillID := job.SkillID
 	job.mu.Unlock()
 
 	body := map[string]interface{}{
 		"is_finale":      isFinale,
 		"draft_version":  draftVer,
+		"skill_id":       skillID,
 		"novel_name":     novelName,
 		"volume_name":    volName,
 		"chapter_number": chapterNum,
@@ -870,7 +920,7 @@ func (m *AutoPublishManager) waitForSession(job *AutoPublishJob, sessionID strin
 
 	for {
 		select {
-		case <-job.stopCh:
+		case <-job.stopCtx.Done():
 			return "", "", 0, fmt.Errorf("auto-publish stopped while waiting for session %s", sessionID)
 		case <-ticker.C:
 			if time.Now().After(deadline) {
@@ -936,6 +986,35 @@ func (m *AutoPublishManager) getDraft(sessionID string) (string, string, error) 
 	return resp.Draft, resp.ChapterTitle, nil
 }
 
+// setNewBookInfo 从 skill 元数据中提取书籍信息并调用 SetBookInfo 上传封面和设置分类/简介。
+// 在新书首次 get_platform_info 返回 newlyCreated=true 时立即调用，不依赖 save_draft 结果。
+func (m *AutoPublishManager) setNewBookInfo(job *AutoPublishJob, cred string, platformInfo *c1.PlatformInfo, novelName string) {
+	name, description, category, roles, fetchErr := m.fetchSkillMeta(job.SkillID)
+	if fetchErr != nil {
+		log.Printf("[auto_publish] task=%s 获取skill元信息失败: %v", job.TaskID, fetchErr)
+		return
+	}
+	if platformInfo.BookName != "" {
+		name = platformInfo.BookName
+	}
+	author, authorErr := m.fanqieAdapter.ResolveAuthorName(job.ctx(), cred)
+	if authorErr != nil {
+		log.Printf("[auto_publish] task=%s 获取账号笔名失败: %v, 使用novelName作为fallback", job.TaskID, authorErr)
+		author = novelName
+	}
+	coverBytes, downloadErr := m.downloadRenderedCover(job.SkillID, author, name)
+	if downloadErr != nil {
+		log.Printf("[auto_publish] task=%s 下载渲染封面失败: %v", job.TaskID, downloadErr)
+		return
+	}
+	result := m.fanqieAdapter.SetBookInfo(job.ctx(), cred, platformInfo.WorkID, name, description, category, roles, coverBytes)
+	if result.Status != "ok" {
+		log.Printf("[auto_publish] task=%s 设置书籍信息失败: %s (code=%s)", job.TaskID, result.ErrorMessage, result.ErrorCode)
+	} else {
+		log.Printf("[auto_publish] task=%s 书籍信息设置成功: name=%s", job.TaskID, name)
+	}
+}
+
 func (m *AutoPublishManager) closeSessionQuiet(sessionID string) {
 	url := fmt.Sprintf("%s/api/session/%s/close", m.sessionMgrURL, sessionID)
 	_, err := m.doPost(url, map[string]interface{}{})
@@ -980,6 +1059,55 @@ type sessionRaw struct {
 	ChapterNumber int    `json:"chapter_number"`
 }
 
+// publishRetryError 表示 PublishDraft 失败但草稿已保存，可只重试发布步骤
+type publishRetryError struct {
+	sessionID    string
+	draftItemID  string
+	chapterTitle string
+	volume       string
+	err          error
+}
+
+func (e *publishRetryError) Error() string {
+	return e.err.Error()
+}
+
+// saveDraftRetryError 表示 SaveDraft 失败，AI 草稿已生成，可重试存草稿+发布
+type saveDraftRetryError struct {
+	sessionID    string
+	draft        string
+	chapterTitle string
+	chapterNum   int
+	volume       string
+	err          error
+}
+
+func (e *saveDraftRetryError) Error() string {
+	return e.err.Error()
+}
+
+var fallbackTitlePunctRe = regexp.MustCompile(`[，,。、；;：:！!？?…""''""【】（）()《》—\-~～\s]+`)
+
+func fallbackChapterTitle(draft string) string {
+	lines := strings.SplitN(draft, "\n", 30)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		cleaned := fallbackTitlePunctRe.ReplaceAllString(trimmed, "")
+		runes := []rune(cleaned)
+		if len(runes) == 0 {
+			continue
+		}
+		if len(runes) > 8 {
+			return string(runes[:8])
+		}
+		return string(runes)
+	}
+	return ""
+}
+
 func (m *AutoPublishManager) updateTaskChapterNumber(job *AutoPublishJob, chapterTitle string, chapterNumber int) {
 	url := fmt.Sprintf("%s/api/task/%s/update", m.sessionMgrURL, job.TaskID)
 
@@ -1003,7 +1131,92 @@ func (m *AutoPublishManager) updatePublishedCount(job *AutoPublishJob) {
 	body := map[string]interface{}{
 		"chapter_count_delta": 1,
 	}
-	m.doPost(url, body)
+	respBody, err := m.doPost(url, body)
+	if err != nil {
+		log.Printf("[auto_publish] task=%s 更新已发布章数失败: %v", job.TaskID, err)
+		return
+	}
+	log.Printf("[auto_publish] task=%s 已发布章数已递增: %s", job.TaskID, string(respBody))
+}
+
+func (m *AutoPublishManager) saveSessionPostID(taskID, sessionID, postID string) {
+	url := fmt.Sprintf("%s/api/task/%s/update", m.sessionMgrURL, taskID)
+	body := map[string]interface{}{
+		"session_id": sessionID,
+		"post_id":    postID,
+	}
+	respBody, err := m.doPost(url, body)
+	if err != nil {
+		log.Printf("[auto_publish] task=%s 保存PostID失败 session=%s err=%v", taskID, sessionID, err)
+		return
+	}
+	log.Printf("[auto_publish] task=%s 保存PostID成功 session=%s resp=%s", taskID, sessionID, string(respBody))
+}
+
+func (m *AutoPublishManager) retryPublishOnly(job *AutoPublishJob, sessionID, draftItemID, chapterTitle, volume string) error {
+	cred, err := m.getFanqieCredential(job)
+	if err != nil {
+		return fmt.Errorf("credential: %w", err)
+	}
+
+	log.Printf("[auto_publish] task=%s 重试发布: draftItemID=%s chapter=%s volume=%s", job.TaskID, draftItemID, chapterTitle, volume)
+
+	pubResult := m.fanqieAdapter.PublishDraft(job.ctx(), chapterTitle, job.NovelName, volume, cred, job.WorkID, draftItemID)
+	if pubResult.Status != "ok" {
+		return fmt.Errorf("publish draft retry: %s (code=%s)", pubResult.ErrorMessage, pubResult.ErrorCode)
+	}
+
+	log.Printf("[auto_publish] task=%s 重试发布成功: title=%s postId=%s", job.TaskID, chapterTitle, pubResult.PostID)
+
+	if pubResult.PostID != "" && pubResult.PostID != job.WorkID {
+		m.updatePublishedCount(job)
+		m.saveSessionPostID(job.TaskID, sessionID, pubResult.PostID)
+	} else {
+		log.Printf("[auto_publish] task=%s 重试发布 postId 无效(workId=%s)，跳过发布计数", job.TaskID, job.WorkID)
+	}
+	return nil
+}
+
+func (m *AutoPublishManager) retrySaveAndPublish(job *AutoPublishJob, sessionID, draft, chapterTitle string, chapterNum int, volume string) error {
+	cred, err := m.getFanqieCredential(job)
+	if err != nil {
+		return fmt.Errorf("credential: %w", err)
+	}
+
+	novelName := job.NovelName
+	log.Printf("[auto_publish] task=%s 重试存草稿+发布: chapter=%d title=%s volume=%s", job.TaskID, chapterNum, chapterTitle, volume)
+
+	saveResult := m.fanqieAdapter.SaveDraft(job.ctx(), chapterTitle, draft, novelName, chapterNum, cred, job.WorkID)
+	if saveResult.Status != "ok" {
+		return fmt.Errorf("save draft retry: %s (code=%s)", saveResult.ErrorMessage, saveResult.ErrorCode)
+	}
+	log.Printf("[auto_publish] task=%s 重试存草稿成功: title=%s", job.TaskID, chapterTitle)
+
+	m.updateTaskChapterNumber(job, chapterTitle, chapterNum)
+
+	platformInfo, pubErr := m.fanqieAdapter.GetPlatformInfo(job.ctx(), novelName, cred, job.WorkID)
+	var draftItemID string
+	if pubErr == nil {
+		for _, d := range platformInfo.Drafts {
+			if d.ChapterNumber == chapterNum {
+				draftItemID = d.ItemID
+				break
+			}
+		}
+	}
+
+	pubResult := m.fanqieAdapter.PublishDraft(job.ctx(), chapterTitle, novelName, volume, cred, job.WorkID, draftItemID)
+	if pubResult.Status != "ok" {
+		return fmt.Errorf("publish draft retry: %s (code=%s)", pubResult.ErrorMessage, pubResult.ErrorCode)
+	}
+
+	log.Printf("[auto_publish] task=%s 重试发布成功: title=%s postId=%s", job.TaskID, chapterTitle, pubResult.PostID)
+
+	if pubResult.PostID != "" && pubResult.PostID != job.WorkID {
+		m.updatePublishedCount(job)
+		m.saveSessionPostID(job.TaskID, sessionID, pubResult.PostID)
+	}
+	return nil
 }
 
 func (m *AutoPublishManager) executeFinish(taskID, userID string, taskInfo *taskInfoData) {
@@ -1012,6 +1225,7 @@ func (m *AutoPublishManager) executeFinish(taskID, userID string, taskInfo *task
 		skillID = "general_fallback_v1"
 	}
 
+	stopCtx, stopCancel := context.WithCancel(context.Background())
 	job := &AutoPublishJob{
 		TaskID:        taskID,
 		UserID:        userID,
@@ -1024,7 +1238,8 @@ func (m *AutoPublishManager) executeFinish(taskID, userID string, taskInfo *task
 		ChapterNumber: taskInfo.ChapterNumber,
 		DraftVersion:  taskInfo.SessionCount,
 		Status:        "finishing",
-		stopCh:        make(chan struct{}),
+		stopCtx:       stopCtx,
+		stopCancel:    stopCancel,
 		finishCh:      make(chan struct{}, 1),
 		createdAt:     time.Now(),
 	}
@@ -1122,6 +1337,36 @@ func (m *AutoPublishManager) doGet(url string) ([]byte, error) {
 		return nil, fmt.Errorf("upstream error %d: %s", resp.StatusCode, string(respBody))
 	}
 
+	return respBody, nil
+}
+
+func (m *AutoPublishManager) fetchSkillMeta(skillID string) (name, description, category, roles string, err error) {
+	url := fmt.Sprintf("%s/api/skill/%s", m.skillRegistryURL, skillID)
+	respBody, err := m.doGet(url)
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("fetch skill meta: %w", err)
+	}
+	var meta struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Category    string `json:"category"`
+		Roles       string `json:"roles"`
+	}
+	if err := json.Unmarshal(respBody, &meta); err != nil {
+		return "", "", "", "", fmt.Errorf("parse skill meta: %w", err)
+	}
+	log.Printf("[auto_publish] fetchSkillMeta: skill=%s name=%s category=%s roles=%s", skillID, meta.Name, meta.Category, meta.Roles)
+	return meta.Name, meta.Description, meta.Category, meta.Roles, nil
+}
+
+func (m *AutoPublishManager) downloadRenderedCover(skillID, author, name string) ([]byte, error) {
+	queryURL := fmt.Sprintf("%s/api/skill/%s/cover-rendered?author=%s&name=%s",
+		m.skillRegistryURL, skillID, url.QueryEscape(author), url.QueryEscape(name))
+	respBody, err := m.doGet(queryURL)
+	if err != nil {
+		return nil, fmt.Errorf("download rendered cover: %w", err)
+	}
+	log.Printf("[auto_publish] downloadRenderedCover: skill=%s size=%d bytes", skillID, len(respBody))
 	return respBody, nil
 }
 

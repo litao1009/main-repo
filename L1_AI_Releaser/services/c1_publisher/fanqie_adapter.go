@@ -8,9 +8,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
+	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -31,7 +35,7 @@ func NewFanqiePublishAdapter(cfg AdapterConfig) *FanqiePublishAdapter {
 		cfg.NodeBin = "node"
 	}
 	if cfg.Timeout <= 0 {
-		cfg.Timeout = 600 * time.Second
+		cfg.Timeout = 1800 * time.Second
 	}
 	return &FanqiePublishAdapter{
 		scriptPath: cfg.ScriptPath,
@@ -80,19 +84,28 @@ type fanqieInput struct {
 	BookID        string `json:"bookId,omitempty"`
 	WorkID        string `json:"workId,omitempty"`
 	DraftItemID   string `json:"draftItemId,omitempty"`
+	Name          string `json:"name,omitempty"`
+	Description   string `json:"description,omitempty"`
+	Category      string `json:"category,omitempty"`
+	CoverBase64   string `json:"coverBase64,omitempty"`
+	Roles         string `json:"roles,omitempty"`
 }
 
 type fanqieOutput struct {
 	Success    bool                 `json:"success"`
 	PostID     string               `json:"postId"`
+	DraftItemID string              `json:"draftItemId"`
 	Error      string               `json:"error"`
 	ErrorCode  string               `json:"errorCode"`
 	Action     string               `json:"action"`
 	WorkID     string               `json:"workId"`
+	NewlyCreated bool               `json:"newlyCreated"`
+	MsToken    string               `json:"msToken"`
 	Drafts     []FanqieDraftInfo    `json:"drafts"`
 	PublishedChapters []FanqieChapterInfo `json:"publishedChapters"`
 	LastPublished *FanqieLastPublished `json:"lastPublished"`
 	Volumes    []FanqieVolumeInfo   `json:"volumes"`
+	BookName   string               `json:"bookName"`
 }
 
 type FanqieDraftInfo struct {
@@ -119,6 +132,9 @@ type FanqieVolumeInfo struct {
 
 type PlatformInfo struct {
 	WorkID            string
+	NewlyCreated      bool
+	BookName          string
+	MsToken           string
 	Drafts            []FanqieDraftInfo
 	PublishedChapters []FanqieChapterInfo
 	LastPublished     *FanqieLastPublished
@@ -189,9 +205,6 @@ func (a *FanqiePublishAdapter) PublishDraft(ctx context.Context, draftTitle, nov
 	if credentials == "" {
 		return a.fail(ErrCodeCredentialFailed, "fanqie cookie is empty", "")
 	}
-	if draftTitle == "" {
-		return a.fail(ErrCodeInputInvalid, "fanqie: draftTitle is empty", "")
-	}
 	if novelName == "" {
 		return a.fail(ErrCodeInputInvalid, "fanqie: novelName is empty", "")
 	}
@@ -246,6 +259,9 @@ func (a *FanqiePublishAdapter) GetPlatformInfo(ctx context.Context, novelName, c
 
 	info := &PlatformInfo{
 		WorkID:            output.WorkID,
+		NewlyCreated:      output.NewlyCreated,
+		BookName:          output.BookName,
+		MsToken:           output.MsToken,
 		Drafts:            output.Drafts,
 		PublishedChapters: output.PublishedChapters,
 		LastPublished:     output.LastPublished,
@@ -260,6 +276,175 @@ func (a *FanqiePublishAdapter) GetPlatformInfo(ctx context.Context, novelName, c
 		novelName, info.WorkID, len(info.Drafts), len(info.PublishedChapters), len(info.Volumes))
 
 	return info, nil
+}
+
+// ResolveAuthorName 从 Fanqie Cookie 解析作者笔名。
+func (a *FanqiePublishAdapter) ResolveAuthorName(ctx context.Context, cookie string) (string, error) {
+	fanqieCheckURL := "https://fanqienovel.com/api/author/account/info/v0/?aid=2503&app_name=muye_novel"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fanqieCheckURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	req.Header.Set("Referer", "https://fanqienovel.com/main/writer/")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	var result struct {
+		Code int `json:"code"`
+		Data struct {
+			AuthorName string `json:"author_name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("parse response: %w", err)
+	}
+	if result.Code != 0 {
+		return "", fmt.Errorf("api code=%d", result.Code)
+	}
+	authorName := strings.TrimSpace(result.Data.AuthorName)
+	if authorName == "" {
+		return "", fmt.Errorf("author_name is empty")
+	}
+	log.Printf("[fanqie] ResolveAuthorName: %s", authorName)
+	return authorName, nil
+}
+
+// SetBookInfo 上传封面并设置书籍信息（仅番茄平台新书创建后调用）。
+func (a *FanqiePublishAdapter) SetBookInfo(ctx context.Context, cookie, workId, name, description, category, roles string, coverBytes []byte) *PublishResult {
+	input := fanqieInput{
+		Action:      "set_book_info",
+		Name:        name,
+		Description: description,
+		Category:    category,
+		CoverBase64: base64.StdEncoding.EncodeToString(coverBytes),
+		WorkID:      workId,
+		Roles:       roles,
+	}
+	return a.runScript(ctx, input, cookie, name)
+}
+
+var msTokenRe = regexp.MustCompile(`msToken=([^;]+)`)
+
+func extractMsToken(cookie string) string {
+	m := msTokenRe.FindStringSubmatch(cookie)
+	if len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
+func uploadCoverImage(ctx context.Context, cookie, msToken string, coverBytes []byte) (string, error) {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormFile("upfile", "cover.png")
+	if err != nil {
+		return "", fmt.Errorf("create form file: %w", err)
+	}
+	if _, err := part.Write(coverBytes); err != nil {
+		return "", fmt.Errorf("write cover data: %w", err)
+	}
+	writer.Close()
+
+	uploadURL := "https://fanqienovel.com/api/author/data/upload_pic_v1/v0?msToken=" + msToken
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, &buf)
+	if err != nil {
+		return "", fmt.Errorf("create upload request: %w", err)
+	}
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	req.Header.Set("Referer", "https://fanqienovel.com/main/writer/")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("upload request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32768))
+	if err != nil {
+		return "", fmt.Errorf("read upload response: %w", err)
+	}
+
+	var result struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    struct {
+			PicURI string `json:"pic_uri"`
+			PicURL string `json:"pic_url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("parse upload response: %w, body=%s", err, string(body))
+	}
+	if result.Code != 0 {
+		return "", fmt.Errorf("upload failed: code=%d msg=%s", result.Code, result.Message)
+	}
+	if result.Data.PicURI == "" {
+		return "", fmt.Errorf("upload response missing pic_uri")
+	}
+	return result.Data.PicURI, nil
+}
+
+func modifyBookInfo(ctx context.Context, cookie, msToken, name, description, category, picURI string) error {
+	body := map[string]interface{}{
+		"book_name":   name,
+		"description": description,
+		"genre":       category,
+		"pic_uri":     picURI,
+	}
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal modify body: %w", err)
+	}
+
+	modifyURL := "https://fanqienovel.com/api/author/book/modify_book/v0?msToken=" + msToken
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, modifyURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("create modify request: %w", err)
+	}
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	req.Header.Set("Referer", "https://fanqienovel.com/main/writer/")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("modify request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16384))
+	if err != nil {
+		return fmt.Errorf("read modify response: %w", err)
+	}
+
+	var result struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("parse modify response: %w, body=%s", err, string(respBody))
+	}
+	if result.Code != 0 {
+		return fmt.Errorf("modify failed: code=%d msg=%s", result.Code, result.Message)
+	}
+	return nil
 }
 
 // --- 脚本执行 ---
@@ -287,6 +472,7 @@ func (a *FanqiePublishAdapter) runScript(ctx context.Context, input fanqieInput,
 		Platform:      "fanqie",
 		Status:        "ok",
 		PostID:        output.PostID,
+		DraftItemID:   output.DraftItemID,
 		MaskedDisplay: maskedDisplay,
 	}
 }

@@ -303,6 +303,7 @@ export interface SessionMessage {
   role: "user" | "assistant" | "system"
   text: string
   timestamp: string
+  session_id?: string
   draft_version?: number
 }
 
@@ -349,14 +350,20 @@ export interface UpdateUserResponse {
 
 // ===== 书卷章 API =====
 
+/** 章节发布阶段，来自 GET /api/task/:tid/book/info */
+export type BookChapterPhase = "draft" | "published"
+
 export interface BookChapter {
   chapter_number: number
   session_id: string
-  title: string
+  title?: string
   status: string
   draft_version: number
+  /** draft=有草稿未发布；published=已发布到平台 */
+  phase?: BookChapterPhase
+  published?: boolean
   created_at: string
-  archived_at: string
+  archived_at?: string
 }
 
 export interface BookVolume {

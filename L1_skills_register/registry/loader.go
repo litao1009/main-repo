@@ -112,6 +112,7 @@ func (r *registryImpl) loadOneSkill(ctx context.Context, skillDir, dirName strin
 	description := extractDescription(promptBytes)
 	category := "custom"
 	coverImage := ""
+	roles := ""
 	if name == "" {
 		name = dirName
 	}
@@ -119,10 +120,12 @@ func (r *registryImpl) loadOneSkill(ctx context.Context, skillDir, dirName strin
 	novelMetaPath := filepath.Join(skillDir, "novel_metadata.json")
 	if nmBytes, err := os.ReadFile(novelMetaPath); err == nil {
 		var nm struct {
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			Genre       string `json:"genre"`
-			CoverImage  string `json:"cover_image"`
+			Title        string `json:"title"`
+			Description  string `json:"description"`
+			Genre        string `json:"genre"`
+			CoverImage   string `json:"cover_image"`
+			Protagonist  string `json:"protagonist"`
+			Protagonists string `json:"protagonists"`
 		}
 		if json.Unmarshal(nmBytes, &nm) == nil {
 			if nm.Title != "" {
@@ -136,6 +139,13 @@ func (r *registryImpl) loadOneSkill(ctx context.Context, skillDir, dirName strin
 			}
 			if nm.CoverImage != "" {
 				coverImage = "/covers/" + dirName + "/cover.png"
+			}
+			rawRoles := nm.Protagonists
+			if rawRoles == "" {
+				rawRoles = nm.Protagonist
+			}
+			if rawRoles != "" {
+				roles = parseProtagonists(rawRoles)
 			}
 		}
 	}
@@ -169,6 +179,7 @@ func (r *registryImpl) loadOneSkill(ctx context.Context, skillDir, dirName strin
 		ExamplesPath:     examplesPath,
 		CoverImage:       coverImage,
 		SkillDirectory:   skillDir,
+		Roles:            roles,
 	}
 
 	if err := r.store.Save(ctx, pkg, promptBytes); err != nil {
@@ -204,8 +215,8 @@ func extractDescription(md []byte) string {
 		}
 		if strings.HasPrefix(trimmed, "# ") {
 			if inContent {
-				return ""
-			}
+	return ""
+}
 			inContent = true
 			continue
 		}
@@ -231,4 +242,28 @@ func extractDescription(md []byte) string {
 		}
 	}
 	return ""
+}
+
+func parseProtagonists(raw string) string {
+	parts := strings.Split(raw, " & ")
+	var names []string
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if idx := strings.Index(part, " ("); idx > 0 {
+			part = part[:idx]
+		}
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		runes := []rune(part)
+		if len(runes) > 5 {
+			part = string(runes[:5])
+		}
+		names = append(names, part)
+		if len(names) >= 2 {
+			break
+		}
+	}
+	return strings.Join(names, ",")
 }

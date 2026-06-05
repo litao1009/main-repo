@@ -45,6 +45,7 @@ type PublishResult struct {
 	Platform      string
 	Status        string // "ok" | "fail"
 	PostID        string // 平台返回的帖子 ID
+	DraftItemID   string // 草稿箱中保存后的 itemId（save_draft 时返回）
 	ErrorCode     string // 失败时的错误码
 	ErrorMessage  string // 失败时的错误描述（不含凭证信息）
 	NovelName     string // 作品名（番茄小说专用，透传到 A4 档案）
