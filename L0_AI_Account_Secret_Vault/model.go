@@ -11,6 +11,11 @@ type AccountCredential struct {
 	CredentialFingerprint string    `db:"credential_fingerprint"`
 	PlatformAuthorID      string    `db:"platform_author_id"`
 	MaskedDisplay         string    `db:"masked_display"`
+	PhoneNumber           string    `db:"phone_number"`
+	AvatarURL             string    `db:"avatar_url"`
+	IsAuth                bool      `db:"is_auth"`
+	IdentityCodeMask      string    `db:"identity_code_mask"`
+	IdentityNameMask      string    `db:"identity_name_mask"`
 	CreatedAt             time.Time `db:"created_at"`
 	UpdatedAt             time.Time `db:"updated_at"`
 }

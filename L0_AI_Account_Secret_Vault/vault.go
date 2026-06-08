@@ -43,8 +43,6 @@ type SecretVault interface {
 	GetCredentialForOwner(ctx context.Context, accountID, uid string) (*GetCredentialsResponse, error)
 
 	// CheckCookieHealth 检测账号 Cookie（登录凭证）是否仍在有效期内。
-	// 通过解析平台特定的 session cookie 中的过期时间实现，无需外部网络请求。
-	// 若平台尚未实现检测逻辑，返回 ErrPlatformNotSupported（HTTP 422）。
 	CheckCookieHealth(ctx context.Context, req CheckCookieHealthRequest) (*CheckCookieHealthResponse, error)
 
 	// Health 返回模块健康状态。nil = 健康。

@@ -89,8 +89,14 @@ type BindRequest struct {
 	AccountID string `json:"account_id"`
 
 	// Caller 调用方标识，用于审计日志。
-	// 注意：P0 阶段为裸字符串（存在伪造风险），P2 加固为 mTLS。
 	Caller string `json:"caller"`
+
+	// 以下字段仅番茄（fanqie）平台使用，绑定时写入展示资料。
+	PhoneNumber string `json:"phone_number,omitempty"`
+	AvatarURL   string `json:"avatar_url,omitempty"`
+	IsAuth           *bool  `json:"is_auth,omitempty"`
+	IdentityCodeMask string `json:"identity_code_mask,omitempty"`
+	IdentityNameMask string `json:"identity_name_mask,omitempty"`
 }
 
 // BindResponse 绑定结果。
@@ -155,7 +161,12 @@ type AccountSummary struct {
 	UID           string `json:"uid"`
 	Platform      string `json:"platform"`
 	MaskedDisplay string `json:"masked_display"`
-	BoundAt       string `json:"bound_at"`
+	PhoneNumber   string `json:"phone_number,omitempty"`
+	AvatarURL     string `json:"avatar_url,omitempty"`
+	IsAuth           bool   `json:"is_auth"`
+	IdentityCodeMask string `json:"identity_code_mask,omitempty"`
+	IdentityNameMask string `json:"identity_name_mask,omitempty"`
+	BoundAt          string `json:"bound_at"`
 	UpdatedAt     string `json:"updated_at"`
 }
 

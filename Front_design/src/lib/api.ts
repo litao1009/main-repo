@@ -123,7 +123,8 @@ export async function bindAccount(
   platform: string,
   credentialsPlaintext: string,
   maskedDisplay?: string,
-  accountId?: string
+  accountId?: string,
+  profile?: { phone_number?: string; avatar_url?: string; is_auth?: boolean; identity_code_mask?: string; identity_name_mask?: string }
 ): Promise<BindResponse> {
   return post<BindResponse>("/api/account/bind", {
     platform,
@@ -131,6 +132,11 @@ export async function bindAccount(
     masked_display: maskedDisplay || undefined,
     account_id: accountId || undefined,
     caller: "bff",
+    phone_number: profile?.phone_number || undefined,
+    avatar_url: profile?.avatar_url || undefined,
+    is_auth: profile?.is_auth,
+    identity_code_mask: profile?.identity_code_mask || undefined,
+    identity_name_mask: profile?.identity_name_mask || undefined,
   })
 }
 

@@ -106,6 +106,9 @@ func (m *MockSecretVault) Bind(ctx context.Context, req BindRequest) (*BindRespo
 		CredentialFingerprint: fingerprint,
 		PlatformAuthorID:      platformAuthorID,
 		MaskedDisplay:         maskedDisplay,
+		PhoneNumber:           req.PhoneNumber,
+		AvatarURL:             req.AvatarURL,
+		IsAuth:                req.IsAuth != nil && *req.IsAuth,
 		CreatedAt:             now,
 		UpdatedAt:             now,
 	}
@@ -193,14 +196,7 @@ func (m *MockSecretVault) List(ctx context.Context, req ListRequest) (*ListRespo
 		if cred.Credential == "" {
 			continue
 		}
-		matched = append(matched, AccountSummary{
-			AccountID:     cred.AccountID,
-			UID:           cred.UID,
-			Platform:      cred.Platform,
-			MaskedDisplay: cred.MaskedDisplay,
-			BoundAt:       cred.CreatedAt.Format(time.RFC3339),
-			UpdatedAt:     cred.UpdatedAt.Format(time.RFC3339),
-		})
+		matched = append(matched, accountSummaryFromCred(cred))
 	}
 
 	total := len(matched)

@@ -16,7 +16,7 @@ import {
   type CookieHealthStatus,
 } from "@/lib/cookie-health-cache"
 import type { AccountSummary } from "@/types"
-import { formatDate, formatRelativeTime } from "@/lib/utils"
+import { formatRelativeTime, normalizeFanqieAvatarUrl } from "@/lib/utils"
 import {
   Shield, Plus, Loader2, CheckCircle, AlertCircle, RefreshCw, ExternalLink, LogIn,
 } from "lucide-react"
@@ -40,8 +40,125 @@ const PLATFORM_ICON: Record<string, { bg: string; text: string; char: string }> 
   yuewen:  { bg: "bg-purple-50",text: "text-purple-500", char: "阅" },
 }
 
-type CaptureStatus = 'idle' | 'running' | 'done' | 'error'
+type CaptureStatus = 'idle' | 'running' | 'author_pending' | 'done' | 'error'
 type DisplayStatus = CookieHealthStatus | 'checking'
+
+type CaptureProfile = {
+  phone_number?: string
+  avatar_url?: string
+  is_auth?: boolean
+  identity_code_mask?: string
+  identity_name_mask?: string
+}
+
+/** 番茄「已实名」点击展开的脱敏信息浮层 */
+function AuthIdentityBadge({ acc }: { acc: AccountSummary }) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const hasIdentity = !!(acc.is_auth && (acc.identity_name_mask || acc.identity_code_mask))
+
+  useEffect(() => {
+    if (!open) return
+    const onDocClick = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [open])
+
+  if (acc.platform !== 'fanqie') return null
+
+  return (
+    <div ref={wrapRef} className="relative shrink-0">
+      <button
+        type="button"
+        disabled={!acc.is_auth || !hasIdentity}
+        onClick={() => hasIdentity && setOpen(v => !v)}
+        className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors ${
+          acc.is_auth
+            ? hasIdentity
+              ? 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 cursor-pointer'
+              : 'bg-emerald-50 text-emerald-600 cursor-default'
+            : 'bg-slate-100 text-slate-400 cursor-default'
+        }`}
+        title={hasIdentity ? '点击查看实名信息' : acc.is_auth ? '已实名' : '未实名'}
+      >
+        {acc.is_auth ? '已实名' : '未实名'}
+      </button>
+      {open && hasIdentity && (
+        <div
+          role="tooltip"
+          className="absolute left-1/2 bottom-[calc(100%+6px)] z-30 w-max max-w-[220px] -translate-x-1/2 rounded-lg border border-slate-200/90 bg-slate-900 px-3 py-2 text-xs text-white shadow-lg"
+        >
+          <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-slate-900" />
+          {acc.identity_name_mask && (
+            <div className="flex gap-2 whitespace-nowrap">
+              <span className="text-slate-400 shrink-0">姓名</span>
+              <span className="font-medium">{acc.identity_name_mask}</span>
+            </div>
+          )}
+          {acc.identity_code_mask && (
+            <div className={`flex gap-2 whitespace-nowrap tabular-nums ${acc.identity_name_mask ? 'mt-1.5' : ''}`}>
+              <span className="text-slate-400 shrink-0">身份证</span>
+              <span className="font-medium">{acc.identity_code_mask}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 等待开通番茄作者时的引导卡片 */
+function AuthorPendingGuide({
+  message,
+  onManual,
+  onCancel,
+}: {
+  message: string
+  onManual: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div className="mt-3 rounded-xl bg-amber-50 border border-amber-100 p-4">
+      <div className="flex gap-3">
+        <div className="flex flex-col items-center gap-1 pt-0.5">
+          <div className="w-5 h-5 rounded-full bg-amber-500 flex items-center justify-center flex-shrink-0">
+            <Loader2 size={11} className="text-white animate-spin" />
+          </div>
+          <div className="w-px flex-1 bg-amber-200 min-h-[24px]" />
+        </div>
+        <div className="pb-1 min-w-0">
+          <p className="text-sm font-medium text-slate-800 leading-snug">
+            请在弹出窗口完成作家入驻
+          </p>
+          <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+            {message || '系统每 5 秒自动检测作者身份，检测到后将自动关闭窗口并回填资料。'}
+          </p>
+          <p className="text-xs text-amber-600 mt-1.5 font-medium">
+            请勿手动关闭弹出窗口，完成入驻后请耐心等待。
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onManual}
+          className="text-xs text-slate-500 hover:text-orange-500 underline underline-offset-2 transition-colors"
+        >
+          已完成入驻但未检测到？点此手动重试
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-xs text-slate-400 hover:text-red-500 underline underline-offset-2 transition-colors ml-auto"
+        >
+          取消等待
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<AccountSummary[]>([])
@@ -64,6 +181,8 @@ export default function AccountsPage() {
   const [cookieStatusMap, setCookieStatusMap] = useState<Record<string, DisplayStatus>>({})
   const [captureStatus, setCaptureStatus] = useState<CaptureStatus>('idle')
   const [captureMessage, setCaptureMessage] = useState("")
+  const [capturedDisplayName, setCapturedDisplayName] = useState("")
+  const [capturedProfile, setCapturedProfile] = useState<CaptureProfile | null>(null)
   const captureContextRef = useRef<'bind' | 'relogin'>('bind')
   const captureTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -154,24 +273,42 @@ export default function AccountsPage() {
     const handleMessage = (event: MessageEvent) => {
       if (event.source !== window) return
       if (!event.data || typeof event.data !== 'object') return
-      const { type, status, message: msg, cookieStr, username, cookieCount } = event.data
+      const { type, status, message: msg, cookieStr, username, phoneNumber, avatarUrl, isAuth, identityCodeMask, identityNameMask, cookieCount } = event.data
       if (captureTimeoutRef.current) {
         clearTimeout(captureTimeoutRef.current)
         captureTimeoutRef.current = null
       }
       switch (type) {
         case 'FANQIE_CAPTURE_STATUS':
-          setCaptureStatus(status === 'busy' ? 'error' : 'running')
+          if (status === 'busy') {
+            setCaptureStatus('error')
+          } else if (status === 'author_pending') {
+            setCaptureStatus('author_pending')
+          } else {
+            setCaptureStatus('running')
+          }
           setCaptureMessage(msg || '')
           break
         case 'FANQIE_CAPTURE_RESULT':
           setCaptureStatus('done')
           setCaptureMessage(`已获取 ${cookieCount} 条 Cookie${username ? `，账号：${username}` : '，请填写显示名'}`)
+          if (username) {
+            setCapturedDisplayName(username)
+            if (captureContextRef.current === 'bind') setDisplayName(username)
+          }
+          if (phoneNumber || avatarUrl || isAuth != null || identityCodeMask || identityNameMask) {
+            setCapturedProfile({
+              phone_number: phoneNumber || undefined,
+              avatar_url: avatarUrl || undefined,
+              is_auth: isAuth ?? undefined,
+              identity_code_mask: identityCodeMask || undefined,
+              identity_name_mask: identityNameMask || undefined,
+            })
+          }
           if (captureContextRef.current === 'relogin') {
             setReLoginCredentials(cookieStr || '')
           } else {
             setCredentials(cookieStr || '')
-            if (username) setDisplayName(username)
           }
           break
         case 'FANQIE_CAPTURE_ERROR':
@@ -206,7 +343,14 @@ export default function AccountsPage() {
   function resetCaptureState() {
     setCaptureStatus('idle')
     setCaptureMessage('')
+    setCapturedDisplayName('')
+    setCapturedProfile(null)
     if (captureTimeoutRef.current) { clearTimeout(captureTimeoutRef.current); captureTimeoutRef.current = null }
+  }
+
+  const handleCancelCapture = () => {
+    window.postMessage({ type: 'FANQIE_CAPTURE_CANCEL', platform }, '*')
+    resetCaptureState()
   }
 
   const handleAutoCapture = (context: 'bind' | 'relogin' = 'bind') => {
@@ -217,7 +361,7 @@ export default function AccountsPage() {
       setCaptureStatus('error')
       setCaptureMessage('未检测到「番茄账号管家」扩展，请安装并启用后重试')
     }, 5000)
-    window.postMessage({ type: 'FANQIE_CAPTURE_START', platform }, '*')
+    window.postMessage({ type: 'FANQIE_CAPTURE_START', platform, mode: context }, '*')
   }
 
   const handleBind = async (e: React.FormEvent) => {
@@ -226,7 +370,13 @@ export default function AccountsPage() {
     setBinding(true)
     setBindDialogError(null)
     try {
-      const resp = await bindAccount(platform, credentials.trim(), displayName.trim() || undefined)
+      const resp = await bindAccount(
+        platform,
+        credentials.trim(),
+        (capturedDisplayName || displayName).trim() || undefined,
+        undefined,
+        platform === 'fanqie' ? capturedProfile ?? undefined : undefined,
+      )
       invalidateCache(resp.account_id)
       setCredentials("")
       setDisplayName("")
@@ -268,7 +418,13 @@ export default function AccountsPage() {
     setReLoginBinding(true)
     setReLoginDialogError(null)
     try {
-      const resp = await bindAccount(reLoginTarget.platform, reLoginCredentials.trim(), reLoginTarget.masked_display, reLoginTarget.account_id)
+      const resp = await bindAccount(
+        reLoginTarget.platform,
+        reLoginCredentials.trim(),
+        (capturedDisplayName || reLoginTarget.masked_display).trim() || undefined,
+        reLoginTarget.account_id,
+        reLoginTarget.platform === 'fanqie' ? capturedProfile ?? undefined : undefined,
+      )
       invalidateCache(resp.account_id)
       setReLoginTarget(null)
       toast.success("Cookie 已更新，登录状态已恢复")
@@ -306,39 +462,40 @@ export default function AccountsPage() {
     }
   })
 
-  /** Cookie 状态徽标；检测中沿用上次结果并弱化，避免与底栏刷新动画重复 */
-  function StatusBadge({ accountId }: { accountId: string }) {
+  /** 卡片底部 Cookie 状态行 */
+  function CookieStatusLine({ accountId, isExpired }: { accountId: string; isExpired: boolean }) {
     const status = cookieStatusMap[accountId]
     const entry = getCachedEntry(accountId)
     const isChecking = status === 'checking'
     const displayStatus: CookieHealthStatus | 'unknown' = isChecking
       ? (entry?.status ?? 'unknown')
       : (status ?? 'unknown')
-    const title = entry
-      ? `上次检测：${formatDate(new Date(entry.checkedAt).toISOString())}${entry.source === 'heuristic' ? '（估算）' : ''}${isChecking ? ' · 正在重新检测' : ''}`
-      : isChecking ? '正在检测' : ''
 
-    const badgeClass =
-      "inline-flex min-w-[5.75rem] items-center justify-center px-2.5 py-1 text-xs font-medium rounded-md border transition-opacity"
+    const dotClass =
+      displayStatus === 'valid' ? 'bg-emerald-500' :
+      displayStatus === 'expired' ? 'bg-rose-500' : 'bg-slate-300'
+    const label =
+      isChecking ? '检测中' :
+      displayStatus === 'valid' ? '有效' :
+      displayStatus === 'expired' ? '失效' : '待检测'
 
-    if (displayStatus === 'valid') {
-      return (
-        <span className={`${badgeClass} text-emerald-600 bg-emerald-50 border-emerald-100 ${isChecking ? 'opacity-60' : ''}`} title={title}>
-          状态: 有效
-        </span>
-      )
-    }
-    if (displayStatus === 'expired') {
-      return (
-        <span className={`${badgeClass} text-rose-600 bg-rose-50 border-rose-200 ${isChecking ? 'opacity-60' : ''}`} title={title}>
-          状态: 失效
-        </span>
-      )
-    }
     return (
-      <span className={`${badgeClass} text-slate-400 bg-slate-50 border-slate-200 ${isChecking ? 'opacity-60' : ''}`} title={title}>
-        状态: 未知
-      </span>
+      <div className="flex items-center gap-1.5 min-w-0 text-xs text-slate-400 whitespace-nowrap">
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass} ${isChecking ? 'animate-pulse' : ''}`} />
+        <span className={`shrink-0 ${isExpired ? 'text-rose-400' : ''}`}>{label}</span>
+        <span className={`shrink-0 text-slate-300 ${entry ? '' : 'invisible'}`}>
+          · {entry ? formatRelativeTime(new Date(entry.checkedAt).toISOString()) : '刚刚'}
+        </span>
+        <button
+          type="button"
+          title="重新检测"
+          onClick={() => recheckOne(accountId)}
+          disabled={isChecking}
+          className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-slate-300 transition-colors hover:text-slate-500 disabled:pointer-events-none"
+        >
+          <RefreshCw size={11} className={isChecking ? 'animate-spin' : ''} />
+        </button>
+      </div>
     )
   }
 
@@ -435,90 +592,86 @@ export default function AccountsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
                   {accs.map(acc => {
                     const status = cookieStatusMap[acc.account_id]
-                    const isExpired = status === 'expired'
                     const entry = getCachedEntry(acc.account_id)
+                    const isChecking = status === 'checking'
+                    const resolvedStatus: CookieHealthStatus | 'unknown' =
+                      isChecking ? (entry?.status ?? 'unknown') : (status ?? 'unknown')
+                    const isExpired = resolvedStatus === 'expired'
+                    const avatarSrc = acc.platform === 'fanqie' ? normalizeFanqieAvatarUrl(acc.avatar_url) : acc.avatar_url
 
                     return (
                       <div
                         key={acc.account_id}
-                        className={`bg-white p-5 rounded-2xl border shadow-sm flex flex-col transition-colors ${
-                          isExpired ? "border-rose-200 bg-rose-50/20" : "border-slate-200"
+                        className={`group bg-white p-4 rounded-2xl border shadow-sm flex flex-col transition-shadow hover:shadow-md ${
+                          isExpired ? "border-rose-200/80 bg-gradient-to-b from-rose-50/40 to-white" : "border-slate-200/80"
                         }`}
                       >
-                        {/* 卡头：图标 + 状态徽标 */}
-                        <div className="flex justify-between items-start mb-3">
-                          <div className={`w-10 h-10 ${icon.bg} ${icon.text} rounded-lg flex items-center justify-center font-bold text-base flex-shrink-0`}>
-                            {icon.char}
+                        {/* 主内容：头像 + 信息 + 打开 */}
+                        <div className="flex items-center gap-3">
+                          {/* 圆形头像 */}
+                          <div className="relative h-11 w-11 shrink-0">
+                            <div
+                              className={`absolute inset-0 flex items-center justify-center rounded-full ${icon.bg} ${icon.text} text-sm font-semibold ring-1 ring-black/5`}
+                            >
+                              {icon.char}
+                            </div>
+                            {avatarSrc && (
+                              <img
+                                src={avatarSrc}
+                                alt=""
+                                className="absolute inset-0 h-11 w-11 rounded-full object-cover ring-2 ring-white"
+                                onError={(e) => { e.currentTarget.remove() }}
+                              />
+                            )}
                           </div>
-                          <StatusBadge accountId={acc.account_id} />
-                        </div>
 
-                        {/* 账号名 + 打开（同行）；右侧固定 36px 占位，避免检测时按钮卸载导致抖动 */}
-                        <div className="flex items-center justify-between gap-3 mb-5">
-                          <h4 className="text-base font-bold text-slate-900 leading-snug line-clamp-2 break-all min-w-0">
-                            {acc.masked_display}
-                          </h4>
-                          <div className="flex h-9 w-9 shrink-0 items-center justify-center">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <h4 className="text-[15px] font-semibold text-slate-900 truncate leading-tight">
+                                {acc.masked_display}
+                              </h4>
+                              <AuthIdentityBadge acc={acc} />
+                            </div>
+                            {acc.platform === 'fanqie' && acc.phone_number ? (
+                              <p className="mt-0.5 text-xs text-slate-500 truncate tabular-nums">{acc.phone_number}</p>
+                            ) : (
+                              <p className="mt-0.5 text-xs text-slate-400 truncate">{PLATFORM_LABELS[acc.platform] || acc.platform}</p>
+                            )}
+                          </div>
+
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center">
                             {(status === 'valid' || (status === 'checking' && entry?.status === 'valid')) ? (
                               <button
                                 type="button"
+                                title="打开番茄作家后台"
                                 onClick={() => handleOpenFanqie(acc)}
                                 disabled={status === 'checking' || !!injectStatusMap[acc.account_id]}
-                                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-orange-500 text-white shadow-sm shadow-orange-200 transition-colors hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-orange-500 text-white shadow-sm transition-all hover:bg-orange-600 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 {injectStatusMap[acc.account_id] === 'injecting'
-                                  ? <Loader2 size={15} className="animate-spin" />
-                                  : <ExternalLink size={15} />
+                                  ? <Loader2 size={14} className="animate-spin" />
+                                  : <ExternalLink size={14} />
                                 }
                               </button>
                             ) : null}
                           </div>
                         </div>
 
-                        {/* 卡底：上次检测 + 操作 */}
-                        <div className={`mt-auto pt-4 border-t flex justify-between items-center ${isExpired ? "border-rose-100" : "border-slate-100"}`}>
-                          {/* 上次检测时间 + 刷新 */}
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            {status === 'checking' ? (
-                              <>
-                                <span className={`text-xs truncate ${isExpired ? "text-rose-300" : "text-slate-400"}`}>
-                                  正在检测…
-                                </span>
-                                <RefreshCw size={11} className="shrink-0 animate-spin text-slate-400" aria-hidden />
-                              </>
-                            ) : (
-                              <>
-                                <span className={`text-xs truncate ${isExpired ? "text-rose-300" : "text-slate-400"}`}>
-                                  {entry
-                                    ? `上次检测：${formatRelativeTime(new Date(entry.checkedAt).toISOString())}`
-                                    : "等待检测"
-                                  }
-                                </span>
-                                <button
-                                  type="button"
-                                  title="重新检测"
-                                  onClick={() => recheckOne(acc.account_id)}
-                                  className="shrink-0 text-slate-300 transition-colors hover:text-slate-500"
-                                >
-                                  <RefreshCw size={11} />
-                                </button>
-                              </>
-                            )}
-                          </div>
-
-                          {/* 操作按钮组 */}
-                          <div className="flex items-center gap-2">
+                        {/* 底部：状态 + 操作 */}
+                        <div className={`mt-4 pt-3 border-t flex items-center justify-between gap-2 min-h-9 flex-nowrap ${isExpired ? "border-rose-100/80" : "border-slate-100"}`}>
+                          <CookieStatusLine accountId={acc.account_id} isExpired={isExpired} />
+                          <div className="flex shrink-0 items-center gap-2 h-7">
                             {isExpired && (
                               <button
                                 onClick={() => setReLoginTarget(acc)}
-                                className="px-3 py-1.5 text-xs font-medium text-white bg-rose-500 hover:bg-rose-600 rounded-md transition-colors"
+                                className="px-2.5 py-1 text-xs font-medium text-white bg-rose-500 hover:bg-rose-600 rounded-md transition-colors whitespace-nowrap"
                               >
                                 重新登录
                               </button>
                             )}
                             <button
                               onClick={() => setUnbindTarget(acc)}
-                              className="text-xs font-medium text-red-400 hover:text-red-600 transition-colors"
+                              className="px-1 py-1 text-xs font-medium text-slate-400 hover:text-red-500 transition-colors whitespace-nowrap"
                             >
                               解绑
                             </button>
@@ -601,14 +754,22 @@ export default function AccountsPage() {
                   <button
                     type="button"
                     onClick={() => handleAutoCapture('bind')}
-                    disabled={captureStatus === 'running'}
+                    disabled={captureStatus === 'running' || captureStatus === 'author_pending'}
                     className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg border-2 border-dashed border-orange-300 bg-orange-50 text-orange-600 hover:bg-orange-100 hover:border-orange-400 disabled:opacity-60 disabled:cursor-not-allowed transition-all text-sm font-medium"
                   >
-                    {captureStatus === 'running'
-                      ? <><Loader2 size={14} className="animate-spin" />正在连接中...</>
+                    {captureStatus === 'running' || captureStatus === 'author_pending'
+                      ? <><Loader2 size={14} className="animate-spin" />{captureStatus === 'author_pending' ? '等待开通作者…' : '正在连接中...'}</>
                       : <><LogIn size={14} />前往登录</>
                     }
                   </button>
+
+                  {captureStatus === 'author_pending' && platform === 'fanqie' && (
+                    <AuthorPendingGuide
+                      message={captureMessage}
+                      onManual={() => window.postMessage({ type: 'FANQIE_MANUAL_CAPTURE', platform }, '*')}
+                      onCancel={handleCancelCapture}
+                    />
+                  )}
 
                   {/* 等待登录阶段：引导提示卡 */}
                   {captureStatus === 'running' && captureMessage.includes('登录') && (
@@ -625,8 +786,8 @@ export default function AccountsPage() {
                             请在弹出的窗口中完成登录
                           </p>
                           <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                            登录成功后，程序将自动识别并保存凭证，页面会自动关闭。<br />
-                            <span className="text-orange-400 font-medium">请勿手动关闭登录窗口。</span>
+                            登录成功后，新账号需先完成作家入驻，系统会自动检测并回填资料。<br />
+                            <span className="text-orange-400 font-medium">等待期间请勿手动关闭弹出窗口。</span>
                           </p>
                         </div>
                       </div>
@@ -635,7 +796,7 @@ export default function AccountsPage() {
                         onClick={() => window.postMessage({ type: 'FANQIE_MANUAL_CAPTURE', platform }, '*')}
                         className="mt-2 text-xs text-slate-400 hover:text-orange-500 underline underline-offset-2 transition-colors block"
                       >
-                        已登录但窗口未关闭？点此手动触发
+                        已登录但未继续？点此手动检测
                       </button>
                     </div>
                   )}
@@ -654,6 +815,30 @@ export default function AccountsPage() {
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-slate-400 w-16 flex-shrink-0">账号名</span>
                     <span className="text-sm text-slate-900 font-medium truncate">{displayName}</span>
+                  </div>
+                )}
+                {capturedProfile?.phone_number && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400 w-16 flex-shrink-0">手机号</span>
+                    <span className="text-sm text-slate-700 truncate">{capturedProfile.phone_number}</span>
+                  </div>
+                )}
+                {capturedProfile?.is_auth != null && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400 w-16 flex-shrink-0">实名</span>
+                    <span className="text-sm text-slate-700">{capturedProfile.is_auth ? '已实名' : '未实名'}</span>
+                  </div>
+                )}
+                {capturedProfile?.is_auth && capturedProfile.identity_name_mask && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400 w-16 flex-shrink-0">姓名</span>
+                    <span className="text-sm text-slate-700 truncate">{capturedProfile.identity_name_mask}</span>
+                  </div>
+                )}
+                {capturedProfile?.is_auth && capturedProfile.identity_code_mask && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400 w-16 flex-shrink-0">身份证</span>
+                    <span className="text-sm text-slate-700 truncate tabular-nums">{capturedProfile.identity_code_mask}</span>
                   </div>
                 )}
                 <div className="flex items-center gap-2">
@@ -725,14 +910,22 @@ export default function AccountsPage() {
                   <button
                     type="button"
                     onClick={() => handleAutoCapture('relogin')}
-                    disabled={captureStatus === 'running'}
+                    disabled={captureStatus === 'running' || captureStatus === 'author_pending'}
                     className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg border-2 border-dashed border-orange-300 bg-orange-50 text-orange-600 hover:bg-orange-100 hover:border-orange-400 disabled:opacity-60 disabled:cursor-not-allowed transition-all text-sm font-medium"
                   >
-                    {captureStatus === 'running'
-                      ? <><Loader2 size={14} className="animate-spin" />正在连接中...</>
+                    {captureStatus === 'running' || captureStatus === 'author_pending'
+                      ? <><Loader2 size={14} className="animate-spin" />{captureStatus === 'author_pending' ? '等待开通作者…' : '正在连接中...'}</>
                       : <><LogIn size={14} />前往登录</>
                     }
                   </button>
+
+                  {captureStatus === 'author_pending' && reLoginTarget?.platform === 'fanqie' && (
+                    <AuthorPendingGuide
+                      message={captureMessage}
+                      onManual={() => window.postMessage({ type: 'FANQIE_MANUAL_CAPTURE', platform: reLoginTarget.platform }, '*')}
+                      onCancel={handleCancelCapture}
+                    />
+                  )}
 
                   {/* 等待登录阶段：引导提示卡 */}
                   {captureStatus === 'running' && captureMessage.includes('登录') && (
@@ -747,8 +940,8 @@ export default function AccountsPage() {
                         <div className="pb-2">
                           <p className="text-sm font-medium text-slate-800 leading-snug">请在弹出的窗口中完成登录</p>
                           <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                            登录成功后，程序将自动识别并保存凭证，页面会自动关闭。<br />
-                            <span className="text-orange-400 font-medium">请勿手动关闭登录窗口。</span>
+                            登录成功后系统将自动检测作者身份并保存凭证。<br />
+                            <span className="text-orange-400 font-medium">等待期间请勿手动关闭弹出窗口。</span>
                           </p>
                         </div>
                       </div>
@@ -757,7 +950,7 @@ export default function AccountsPage() {
                         onClick={() => window.postMessage({ type: 'FANQIE_MANUAL_CAPTURE', platform: reLoginTarget!.platform }, '*')}
                         className="mt-2 text-xs text-slate-400 hover:text-orange-500 underline underline-offset-2 transition-colors block"
                       >
-                        已登录但窗口未关闭？点此手动触发
+                        已登录但未继续？点此手动检测
                       </button>
                     </div>
                   )}

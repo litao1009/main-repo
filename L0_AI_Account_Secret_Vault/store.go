@@ -19,18 +19,30 @@ func NewCredentialStore(db *sql.DB) *CredentialStore {
 func (s *CredentialStore) Upsert(ctx context.Context, cred *AccountCredential) error {
 	query := `
 		INSERT INTO a1_credentials
-			(account_id, uid, platform, credential, credential_fingerprint, platform_author_id, masked_display, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(account_id, uid, platform, credential, credential_fingerprint, platform_author_id, masked_display, phone_number, avatar_url, is_auth, identity_code_mask, identity_name_mask, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			credential = VALUES(credential),
 			credential_fingerprint = VALUES(credential_fingerprint),
 			platform_author_id = VALUES(platform_author_id),
 			masked_display = VALUES(masked_display),
+			phone_number = VALUES(phone_number),
+			avatar_url = VALUES(avatar_url),
+			is_auth = VALUES(is_auth),
+			identity_code_mask = VALUES(identity_code_mask),
+			identity_name_mask = VALUES(identity_name_mask),
 			updated_at = VALUES(updated_at)
 	`
+	isAuthVal := 0
+	if cred.IsAuth {
+		isAuthVal = 1
+	}
 	_, err := s.db.ExecContext(ctx, query,
 		cred.AccountID, cred.UID, cred.Platform,
-		cred.Credential, cred.CredentialFingerprint, cred.PlatformAuthorID, cred.MaskedDisplay, cred.CreatedAt, cred.UpdatedAt,
+		cred.Credential, cred.CredentialFingerprint, cred.PlatformAuthorID, cred.MaskedDisplay,
+		nullIfEmpty(cred.PhoneNumber), nullIfEmpty(cred.AvatarURL), isAuthVal,
+		nullIfEmpty(cred.IdentityCodeMask), nullIfEmpty(cred.IdentityNameMask),
+		cred.CreatedAt, cred.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert a1_credential: %w", err)
@@ -41,7 +53,7 @@ func (s *CredentialStore) Upsert(ctx context.Context, cred *AccountCredential) e
 // FindByUID 查询用户的所有已绑定账号（不含 credential 列，支持分页）。
 func (s *CredentialStore) FindByUID(ctx context.Context, uid string, platform string, offset int, limit int) ([]*AccountCredential, error) {
 	query := `
-		SELECT account_id, uid, platform, masked_display, created_at, updated_at
+		SELECT account_id, uid, platform, masked_display, phone_number, avatar_url, is_auth, identity_code_mask, identity_name_mask, created_at, updated_at
 		FROM a1_credentials
 		WHERE uid = ?
 		  AND credential IS NOT NULL AND credential != ''
@@ -66,12 +78,16 @@ func (s *CredentialStore) FindByUID(ctx context.Context, uid string, platform st
 	var result []*AccountCredential
 	for rows.Next() {
 		cred := &AccountCredential{}
+		var phone, avatar, identityCode, identityName sql.NullString
+		var isAuth sql.NullBool
 		if err := rows.Scan(
 			&cred.AccountID, &cred.UID, &cred.Platform,
-			&cred.MaskedDisplay, &cred.CreatedAt, &cred.UpdatedAt,
+			&cred.MaskedDisplay, &phone, &avatar, &isAuth, &identityCode, &identityName,
+			&cred.CreatedAt, &cred.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan credential: %w", err)
 		}
+		scanProfileFields(phone, avatar, isAuth, identityCode, identityName, cred)
 		result = append(result, cred)
 	}
 	return result, rows.Err()
@@ -359,7 +375,7 @@ func (s *CredentialStore) SoftDelete(ctx context.Context, accountID string) erro
 // FindAll 管理员查询所有已绑定账号（分页）。
 func (s *CredentialStore) FindAll(ctx context.Context, platform string, offset int, limit int) ([]*AccountCredential, error) {
 	query := `
-		SELECT account_id, uid, platform, masked_display, created_at, updated_at
+		SELECT account_id, uid, platform, masked_display, phone_number, avatar_url, is_auth, identity_code_mask, identity_name_mask, created_at, updated_at
 		FROM a1_credentials
 		WHERE credential IS NOT NULL AND credential != ''
 	`
@@ -383,13 +399,35 @@ func (s *CredentialStore) FindAll(ctx context.Context, platform string, offset i
 	var result []*AccountCredential
 	for rows.Next() {
 		cred := &AccountCredential{}
+		var phone, avatar, identityCode, identityName sql.NullString
+		var isAuth sql.NullBool
 		if err := rows.Scan(
 			&cred.AccountID, &cred.UID, &cred.Platform,
-			&cred.MaskedDisplay, &cred.CreatedAt, &cred.UpdatedAt,
+			&cred.MaskedDisplay, &phone, &avatar, &isAuth, &identityCode, &identityName,
+			&cred.CreatedAt, &cred.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan credential: %w", err)
 		}
+		scanProfileFields(phone, avatar, isAuth, identityCode, identityName, cred)
 		result = append(result, cred)
 	}
 	return result, rows.Err()
+}
+
+func scanProfileFields(phone, avatar sql.NullString, isAuth sql.NullBool, identityCode, identityName sql.NullString, cred *AccountCredential) {
+	if phone.Valid {
+		cred.PhoneNumber = phone.String
+	}
+	if avatar.Valid {
+		cred.AvatarURL = avatar.String
+	}
+	if isAuth.Valid {
+		cred.IsAuth = isAuth.Bool
+	}
+	if identityCode.Valid {
+		cred.IdentityCodeMask = identityCode.String
+	}
+	if identityName.Valid {
+		cred.IdentityNameMask = identityName.String
+	}
 }

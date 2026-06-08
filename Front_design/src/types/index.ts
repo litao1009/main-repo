@@ -4,6 +4,11 @@ export interface AccountSummary {
   uid: string
   platform: string
   masked_display: string
+  phone_number?: string
+  avatar_url?: string
+  is_auth?: boolean
+  identity_code_mask?: string
+  identity_name_mask?: string
   bound_at: string
   updated_at: string
 }
@@ -38,6 +43,11 @@ export interface BindRequest {
   masked_display?: string
   account_id?: string
   caller: string
+  phone_number?: string
+  avatar_url?: string
+  is_auth?: boolean
+  identity_code_mask?: string
+  identity_name_mask?: string
 }
 
 export interface BindResponse {

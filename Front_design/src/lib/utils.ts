@@ -118,3 +118,17 @@ export function formatRelativeTime(dateStr: string): string {
 
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
 }
+
+/** 番茄私有 CDN 头像转可公开访问的 byteimg 地址 */
+export function normalizeFanqieAvatarUrl(url?: string): string | undefined {
+  if (!url) return undefined
+  const trimmed = url.trim()
+  if (!trimmed) return undefined
+  if (trimmed.includes("byteimg.com")) return trimmed
+  const match = trimmed.match(/novel-static\/([a-f0-9]+)/i)
+  if (match) {
+    return `https://p3-novel.byteimg.com/img/novel-static/${match[1]}~tplv-obj.image`
+  }
+  if (trimmed.startsWith("/")) return `https://fanqienovel.com${trimmed}`
+  return trimmed
+}

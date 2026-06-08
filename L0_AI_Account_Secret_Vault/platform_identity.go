@@ -2,7 +2,6 @@ package vault
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,60 +36,15 @@ func ResolvePlatformAuthorID(ctx context.Context, platform, credentialsPlaintext
 }
 
 func resolveFanqieAuthorID(ctx context.Context, cookieStr string) (string, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, platformIdentityTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, fanqieCheckURL, nil)
+	info, err := FetchFanqieAccountInfo(ctx, cookieStr)
 	if err != nil {
-		return "", fmt.Errorf("build fanqie identity request: %w", err)
-	}
-	req.Header.Set("Cookie", cookieStr)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-	req.Header.Set("Referer", "https://fanqienovel.com/main/writer/")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-
-	client := &http.Client{
-		Timeout: platformIdentityTimeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+		return "", err
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("fanqie identity probe failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 || resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fanqie identity probe http %d", resp.StatusCode)
+	if info.MPName != "" {
+		return info.MPName, nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
-	if err != nil {
-		return "", fmt.Errorf("read fanqie identity response: %w", err)
-	}
-
-	var result struct {
-		Code int `json:"code"`
-		Data struct {
-			MPName     string `json:"mp_name"`
-			AuthorName string `json:"author_name"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("parse fanqie identity response: %w", err)
-	}
-	if result.Code != 0 {
-		return "", fmt.Errorf("fanqie identity probe code=%d", result.Code)
-	}
-
-	mpName := strings.TrimSpace(result.Data.MPName)
-	if mpName != "" {
-		return mpName, nil
-	}
-
-	// 兜底：部分 Cookie 可能缺 mp_name 字段，尝试 uid_tt
 	if uidTT := strings.TrimSpace(parseCookieField(cookieStr, "uid_tt")); uidTT != "" {
 		return "uid_tt:" + uidTT, nil
 	}

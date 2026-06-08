@@ -9,6 +9,26 @@ import (
 const defaultPageLimit = 20
 const maxPageLimit = 100
 
+func accountSummaryFromCred(cred *AccountCredential) AccountSummary {
+	avatarURL := cred.AvatarURL
+	if cred.Platform == "fanqie" {
+		avatarURL = NormalizeFanqieAvatarURL(avatarURL)
+	}
+	return AccountSummary{
+		AccountID:     cred.AccountID,
+		UID:           cred.UID,
+		Platform:      cred.Platform,
+		MaskedDisplay: cred.MaskedDisplay,
+		PhoneNumber:      cred.PhoneNumber,
+		AvatarURL:        avatarURL,
+		IsAuth:           cred.IsAuth,
+		IdentityCodeMask: cred.IdentityCodeMask,
+		IdentityNameMask: cred.IdentityNameMask,
+		BoundAt:       cred.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:     cred.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
 func (v *RealSecretVault) List(ctx context.Context, req ListRequest) (*ListResponse, error) {
 	if req.UID == "" {
 		creds, err := v.store.FindAll(ctx, req.Platform, req.Offset, req.Limit)
@@ -17,14 +37,7 @@ func (v *RealSecretVault) List(ctx context.Context, req ListRequest) (*ListRespo
 		}
 		accounts := make([]AccountSummary, 0, len(creds))
 		for _, cred := range creds {
-			accounts = append(accounts, AccountSummary{
-				AccountID:     cred.AccountID,
-				UID:           cred.UID,
-				Platform:      cred.Platform,
-				MaskedDisplay: cred.MaskedDisplay,
-				BoundAt:       cred.CreatedAt.Format(time.RFC3339),
-				UpdatedAt:     cred.UpdatedAt.Format(time.RFC3339),
-			})
+			accounts = append(accounts, accountSummaryFromCred(cred))
 		}
 		return &ListResponse{Accounts: accounts, Total: len(accounts)}, nil
 	}
@@ -48,14 +61,7 @@ func (v *RealSecretVault) List(ctx context.Context, req ListRequest) (*ListRespo
 
 	accounts := make([]AccountSummary, 0, len(creds))
 	for _, cred := range creds {
-		accounts = append(accounts, AccountSummary{
-			AccountID:     cred.AccountID,
-			UID:           cred.UID,
-			Platform:      cred.Platform,
-			MaskedDisplay: cred.MaskedDisplay,
-			BoundAt:       cred.CreatedAt.Format(time.RFC3339),
-			UpdatedAt:     cred.UpdatedAt.Format(time.RFC3339),
-		})
+		accounts = append(accounts, accountSummaryFromCred(cred))
 	}
 
 	return &ListResponse{

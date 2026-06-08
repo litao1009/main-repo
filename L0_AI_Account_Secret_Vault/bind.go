@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+func normalizeAvatarURLForPlatform(platform, avatarURL string) string {
+	if platform == "fanqie" {
+		return NormalizeFanqieAvatarURL(avatarURL)
+	}
+	return avatarURL
+}
+
 func requiresPlatformAuthorID(platform string) bool {
 	switch platform {
 	case "fanqie", "zhulang":
@@ -99,6 +106,13 @@ func (v *RealSecretVault) Bind(ctx context.Context, req BindRequest) (*BindRespo
 	}
 
 	now := time.Now().UTC()
+	isAuth := req.IsAuth != nil && *req.IsAuth
+	identityCodeMask := ""
+	identityNameMask := ""
+	if isAuth {
+		identityCodeMask = req.IdentityCodeMask
+		identityNameMask = req.IdentityNameMask
+	}
 	cred := &AccountCredential{
 		AccountID:             accountID,
 		UID:                   req.UID,
@@ -107,6 +121,11 @@ func (v *RealSecretVault) Bind(ctx context.Context, req BindRequest) (*BindRespo
 		CredentialFingerprint: fingerprint,
 		PlatformAuthorID:      platformAuthorID,
 		MaskedDisplay:         maskedDisplay,
+		PhoneNumber:           req.PhoneNumber,
+		AvatarURL:             normalizeAvatarURLForPlatform(req.Platform, req.AvatarURL),
+		IsAuth:                isAuth,
+		IdentityCodeMask:      identityCodeMask,
+		IdentityNameMask:      identityNameMask,
 		CreatedAt:             now,
 		UpdatedAt:             now,
 	}
