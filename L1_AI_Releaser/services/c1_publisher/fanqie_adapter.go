@@ -246,6 +246,32 @@ func (a *FanqiePublishAdapter) PublishDraftViaPageAPI(ctx context.Context, workI
 	return a.runScript(ctx, input, credentials, "")
 }
 
+// SaveDraftViaPageAPI 通过 Puppeteer 脚本在浏览器内调用 cover_article API 保存草稿（不操作 DOM）。
+// cover_article API 优先，Puppeteer DOM 操作作为兜底。
+func (a *FanqiePublishAdapter) SaveDraftViaPageAPI(ctx context.Context, title, content, novelName string, chapterNumber int, credentials, workId, volumeName, volumeId string) *PublishResult {
+	if credentials == "" {
+		return a.fail(ErrCodeCredentialFailed, "fanqie cookie is empty", "")
+	}
+	if content == "" {
+		return a.fail(ErrCodeInputInvalid, "fanqie: content is empty", "")
+	}
+	if workId == "" {
+		return a.fail(ErrCodeInputInvalid, "fanqie: workId is empty", "")
+	}
+
+	input := fanqieInput{
+		Action:        "save_draft_api",
+		Title:         title,
+		Content:       content,
+		NovelName:     novelName,
+		ChapterNumber: chapterNumber,
+		WorkID:        workId,
+		VolumeName:    volumeName,
+		VolumeID:      volumeId,
+	}
+	return a.runScript(ctx, input, credentials, novelName)
+}
+
 // GetPlatformInfo 获取番茄小说平台的草稿箱、已发布章节、分卷信息。
 // 用于发布前状态检查和发布后验证。
 func (a *FanqiePublishAdapter) GetPlatformInfo(ctx context.Context, novelName, credentials string, workId string) (*PlatformInfo, *PublishResult) {

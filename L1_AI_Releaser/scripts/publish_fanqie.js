@@ -196,6 +196,75 @@ async function doSaveDraft(cookieStr, input) {
 }
 
 
+async function doCoverArticle(cookieStr, input) {
+    const { workId, title, content, novelName, volumeName, volumeId } = input;
+    if (!workId)   { fail('missing required field: workId'); return; }
+    if (!content)  { fail('missing required field: content'); return; }
+    if (!title)    { fail('missing required field: title'); return; }
+    log('info', 'cover_article API starting', { workId, title, volumeName, contentLen: content.length });
+    const browser = await launchBrowser(); let page;
+    try {
+        page = await browser.newPage(); await page.setViewport(CONFIG.VIEWPORT);
+        await loginAndNavigate(page, cookieStr);
+        await enterNovelByWorkId(page, workId, novelName || '');
+        await sleep(2000); await dismissPopups(page); await sleep(1000);
+
+        const editUrl = CONFIG.BASE_URL + '/main/writer/' + workId + '/publish/?enter_from=newchapter';
+        log('info', 'navigating to new chapter editor for itemId', { editUrl });
+        await page.goto(editUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.NAVIGATION_TIMEOUT });
+        await sleep(3000); await dismissPopups(page); await sleep(1000);
+
+        const itemId = extractItemIdFromURL(page.url());
+        if (!itemId) {
+            throw new Error('cover_article: failed to extract itemId from editor URL: ' + page.url());
+        }
+        log('info', 'itemId extracted from editor URL', { itemId });
+
+        const result = await page.evaluate(async (params) => {
+            const cookieMs = document.cookie.match(/msToken=([^;]+)/);
+            const msToken = cookieMs ? decodeURIComponent(cookieMs[1]) : '';
+
+            let htmlContent = '';
+            const paragraphs = params.content.split('\n\n');
+            for (const p of paragraphs) {
+                const trimmed = p.trim();
+                if (trimmed === '') {
+                    htmlContent += '<p><br></p>';
+                } else {
+                    htmlContent += '<p>' + trimmed + '</p>';
+                }
+            }
+
+            const url = 'https://fanqienovel.com/api/author/article/cover_article/v0/?msToken=' + encodeURIComponent(msToken);
+            const formBody = new URLSearchParams();
+            formBody.append('aid', '2503');
+            formBody.append('app_name', 'muye_novel');
+            formBody.append('book_id', params.workId);
+            formBody.append('item_id', params.itemId);
+            formBody.append('title', params.title);
+            formBody.append('content', htmlContent);
+            formBody.append('volume_name', params.volumeName);
+            formBody.append('volume_id', params.volumeId);
+
+            const resp = await fetch(url, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Accept': 'application/json' },
+                body: formBody
+            });
+            const data = await resp.json();
+            return { code: data.code, message: data.message, latestVersion: data.data?.latest_version };
+        }, { workId, itemId, title, content, volumeName: volumeName || '', volumeId: volumeId || '' });
+
+        log('info', 'cover_article API response', { code: result.code, message: result.message, latestVersion: result.latestVersion });
+        if (result.code === 0) {
+            return { success: true, action: 'save_draft', draftItemId: itemId };
+        }
+        throw new Error('cover_article failed: code=' + result.code + ' msg=' + (result.message || ''));
+    } finally { await browser.close().catch(() => {}); _globalBrowser = null; log('info', 'browser closed'); }
+}
+
+
 async function fetchDraftListViaAPI(page, workId) {
     try {
         const msToken = await getMsToken(page);
@@ -632,6 +701,9 @@ async function main() {
             switch (action) {
                 case 'save_draft':
                     result = await doSaveDraft(cookieStr, input);
+                    break;
+                case 'save_draft_api':
+                    result = await doCoverArticle(cookieStr, input);
                     break;
                 case 'publish_draft':
                     result = await doPublishDraft(cookieStr, input);
