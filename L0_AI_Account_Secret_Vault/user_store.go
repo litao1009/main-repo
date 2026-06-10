@@ -5,9 +5,12 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -37,13 +40,54 @@ func (s *UserStore) checkPassword(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
-func (s *UserStore) Create(ctx context.Context, username, password, role string) (*User, error) {
+func (s *UserStore) checkPhoneAvailable(ctx context.Context, phone, excludeUID string) error {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return nil
+	}
+	existing, err := s.FindByPhone(ctx, phone)
+	if err != nil {
+		return err
+	}
+	if existing != nil && existing.UID != excludeUID {
+		return ErrPhoneExists
+	}
+	return nil
+}
+
+func mapUserDuplicateError(err error) error {
+	var me *mysql.MySQLError
+	if !errors.As(err, &me) || me.Number != 1062 {
+		return err
+	}
+	msg := strings.ToLower(me.Message)
+	switch {
+	case strings.Contains(msg, "uk_phone"), strings.Contains(msg, "phone"):
+		return ErrPhoneExists
+	case strings.Contains(msg, "uk_username"), strings.Contains(msg, "username"):
+		return ErrUserExists
+	default:
+		return err
+	}
+}
+
+func (s *UserStore) Create(ctx context.Context, username, password, role, phone string) (*User, error) {
+	var err error
+	username, err = ValidateUsername(username)
+	if err != nil {
+		return nil, err
+	}
+	phone = strings.TrimSpace(phone)
+
 	existing, err := s.FindByUsername(ctx, username)
 	if err != nil {
 		return nil, fmt.Errorf("check existing user: %w", err)
 	}
 	if existing != nil {
 		return nil, ErrUserExists
+	}
+	if err := s.checkPhoneAvailable(ctx, phone, ""); err != nil {
+		return nil, err
 	}
 
 	if len(password) < 8 {
@@ -60,25 +104,34 @@ func (s *UserStore) Create(ctx context.Context, username, password, role string)
 	}
 
 	uid := generateUID()
-	query := `INSERT INTO a1_users (uid, username, password, role, password_changed_at, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW(), NOW())`
-	_, err = s.db.ExecContext(ctx, query, uid, username, hash, role)
+	var phoneVal sql.NullString
+	if phone != "" {
+		phoneVal = sql.NullString{String: phone, Valid: true}
+	}
+	query := `INSERT INTO a1_users (uid, username, password, role, phone, password_changed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW(), NOW())`
+	_, err = s.db.ExecContext(ctx, query, uid, username, hash, role, phoneVal)
 	if err != nil {
+		if mapped := mapUserDuplicateError(err); mapped != err {
+			return nil, mapped
+		}
 		return nil, fmt.Errorf("create user: %w", err)
 	}
 
 	return &User{
 		UID:      uid,
 		Username: username,
+		Phone:    phone,
 		Password: hash,
 		Role:     role,
 	}, nil
 }
 
 func (s *UserStore) FindByUsername(ctx context.Context, username string) (*User, error) {
-	query := `SELECT uid, username, password, role, password_changed_at, created_at, updated_at FROM a1_users WHERE username = ?`
+	query := `SELECT uid, username, phone, password, role, password_changed_at, created_at, updated_at FROM a1_users WHERE username = ?`
 	user := &User{}
+	var phone sql.NullString
 	err := s.db.QueryRowContext(ctx, query, username).Scan(
-		&user.UID, &user.Username, &user.Password, &user.Role, &user.PasswordChangedAt, &user.CreatedAt, &user.UpdatedAt,
+		&user.UID, &user.Username, &phone, &user.Password, &user.Role, &user.PasswordChangedAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -86,14 +139,18 @@ func (s *UserStore) FindByUsername(ctx context.Context, username string) (*User,
 	if err != nil {
 		return nil, fmt.Errorf("find user by username: %w", err)
 	}
+	if phone.Valid {
+		user.Phone = phone.String
+	}
 	return user, nil
 }
 
 func (s *UserStore) FindByUID(ctx context.Context, uid string) (*User, error) {
-	query := `SELECT uid, username, password, role, password_changed_at, created_at, updated_at FROM a1_users WHERE uid = ?`
+	query := `SELECT uid, username, phone, password, role, password_changed_at, created_at, updated_at FROM a1_users WHERE uid = ?`
 	user := &User{}
+	var phone sql.NullString
 	err := s.db.QueryRowContext(ctx, query, uid).Scan(
-		&user.UID, &user.Username, &user.Password, &user.Role, &user.PasswordChangedAt, &user.CreatedAt, &user.UpdatedAt,
+		&user.UID, &user.Username, &phone, &user.Password, &user.Role, &user.PasswordChangedAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -101,13 +158,49 @@ func (s *UserStore) FindByUID(ctx context.Context, uid string) (*User, error) {
 	if err != nil {
 		return nil, fmt.Errorf("find user by uid: %w", err)
 	}
+	if phone.Valid {
+		user.Phone = phone.String
+	}
 	return user, nil
 }
 
-func (s *UserStore) Authenticate(ctx context.Context, username, password string) (*User, error) {
-	user, err := s.FindByUsername(ctx, username)
+func (s *UserStore) FindByPhone(ctx context.Context, phone string) (*User, error) {
+	if phone == "" {
+		return nil, nil
+	}
+	query := `SELECT uid, username, phone, password, role, password_changed_at, created_at, updated_at FROM a1_users WHERE phone = ?`
+	user := &User{}
+	var phoneVal sql.NullString
+	err := s.db.QueryRowContext(ctx, query, phone).Scan(
+		&user.UID, &user.Username, &phoneVal, &user.Password, &user.Role, &user.PasswordChangedAt, &user.CreatedAt, &user.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find user by phone: %w", err)
+	}
+	if phoneVal.Valid {
+		user.Phone = phoneVal.String
+	}
+	return user, nil
+}
+
+func (s *UserStore) Authenticate(ctx context.Context, account, password string) (*User, error) {
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return nil, ErrInvalidCredentials
+	}
+
+	user, err := s.FindByUsername(ctx, account)
 	if err != nil {
 		return nil, err
+	}
+	if user == nil {
+		user, err = s.FindByPhone(ctx, account)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if user == nil {
 		return nil, ErrInvalidCredentials
@@ -145,7 +238,7 @@ func (s *UserStore) ListUsers(ctx context.Context, page, size int, priorityUID s
 	// task_count 由 BFF 根据 Session Manager 创作任务数填充（与任务列表一致）。
 	// 勿用 workflow_task：该表记录发布流水线运行，数量远大于实际创作任务。
 	query := `
-		SELECT u.uid, u.username, u.role, u.created_at,
+		SELECT u.uid, u.username, u.phone, u.role, u.created_at,
 		       COALESCE(c.account_count, 0) AS account_count,
 		       0 AS task_count,
 		       u.last_login_at
@@ -169,9 +262,13 @@ func (s *UserStore) ListUsers(ctx context.Context, page, size int, priorityUID s
 	for rows.Next() {
 		var u AdminUserInfo
 		var createdAt time.Time
+		var phone sql.NullString
 		var lastLoginAt sql.NullTime
-		if err := rows.Scan(&u.UID, &u.Username, &u.Role, &createdAt, &u.AccountCount, &u.TaskCount, &lastLoginAt); err != nil {
+		if err := rows.Scan(&u.UID, &u.Username, &phone, &u.Role, &createdAt, &u.AccountCount, &u.TaskCount, &lastLoginAt); err != nil {
 			return nil, 0, fmt.Errorf("scan user: %w", err)
+		}
+		if phone.Valid {
+			u.Phone = phone.String
 		}
 		u.CreatedAt = createdAt.Format(time.RFC3339)
 		if lastLoginAt.Valid {
@@ -185,7 +282,7 @@ func (s *UserStore) ListUsers(ctx context.Context, page, size int, priorityUID s
 	return users, total, rows.Err()
 }
 
-func (s *UserStore) UpdateUser(ctx context.Context, uid, password, role string, operatorUID string) error {
+func (s *UserStore) UpdateUser(ctx context.Context, uid, password, role string, phone *string, operatorUID string) error {
 	user, err := s.FindByUID(ctx, uid)
 	if err != nil {
 		return fmt.Errorf("find user: %w", err)
@@ -198,6 +295,9 @@ func (s *UserStore) UpdateUser(ctx context.Context, uid, password, role string, 
 		return ErrCannotChangeOwnRole
 	}
 
+	var sets []string
+	var args []interface{}
+
 	if password != "" {
 		if len(password) < 8 {
 			return ErrPasswordTooShort
@@ -206,26 +306,42 @@ func (s *UserStore) UpdateUser(ctx context.Context, uid, password, role string, 
 		if err != nil {
 			return err
 		}
-		if role != "" {
-			_, err = s.db.ExecContext(ctx,
-				`UPDATE a1_users SET password = ?, role = ?, password_changed_at = NOW(), updated_at = NOW() WHERE uid = ?`,
-				hash, role, uid)
-		} else {
-			_, err = s.db.ExecContext(ctx,
-				`UPDATE a1_users SET password = ?, password_changed_at = NOW(), updated_at = NOW() WHERE uid = ?`,
-				hash, uid)
-		}
-		return err
+		sets = append(sets, "password = ?", "password_changed_at = NOW()")
+		args = append(args, hash)
 	}
 
 	if role != "" {
-		_, err = s.db.ExecContext(ctx,
-			`UPDATE a1_users SET role = ?, updated_at = NOW() WHERE uid = ?`,
-			role, uid)
-		return err
+		sets = append(sets, "role = ?")
+		args = append(args, role)
 	}
 
-	return nil
+	if phone != nil {
+		trimmed := strings.TrimSpace(*phone)
+		if trimmed == "" {
+			sets = append(sets, "phone = NULL")
+		} else {
+			if err := s.checkPhoneAvailable(ctx, trimmed, uid); err != nil {
+				return err
+			}
+			sets = append(sets, "phone = ?")
+			args = append(args, trimmed)
+		}
+	}
+
+	if len(sets) == 0 {
+		return nil
+	}
+
+	sets = append(sets, "updated_at = NOW()")
+	query := "UPDATE a1_users SET " + strings.Join(sets, ", ") + " WHERE uid = ?"
+	args = append(args, uid)
+	_, err = s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		if mapped := mapUserDuplicateError(err); mapped != err {
+			return mapped
+		}
+	}
+	return err
 }
 
 func (s *UserStore) DeleteUser(ctx context.Context, uid, operatorUID string) error {

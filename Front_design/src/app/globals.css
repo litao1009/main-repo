@@ -45,7 +45,9 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-size: 16px;
-    overflow-y: auto;
+    /* stable：始终预留滚动条槽位，避免内容变短时滚动条消失导致横向抖动 */
+    scrollbar-gutter: stable;
+    overflow-y: scroll;
     overflow-x: hidden;
   }
 }

@@ -7,7 +7,7 @@ import { formatNumber } from "@/lib/utils"
 import { Loader2, AlertCircle } from "lucide-react"
 
 const PLATFORM_LABEL: Record<string, string> = {
-  fanqie: "番茄小说", zhulang: "逐浪网", xhs: "小红书", wechat: "公众号", yuewen: "阅文",
+  fanqie: "番茄小说", qimao: "七猫", zhulang: "逐浪网", xhs: "小红书", wechat: "公众号", yuewen: "阅文",
 }
 const platformLabel = (p: string) => PLATFORM_LABEL[p] || p
 
@@ -20,7 +20,8 @@ const TIME_TABS = [
 const PLATFORM_TABS = [
   { value: "", label: "全部平台" },
   { value: "fanqie",  label: "番茄小说" },
-  { value: "zhulang", label: "逐浪网" },
+  { value: "qimao",   label: "七猫"     },
+  { value: "zhulang", label: "逐浪网"   },
 ]
 
 export default function DashboardPage() {

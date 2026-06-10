@@ -60,7 +60,20 @@ export function isCacheOutdated(
   accountUpdatedAt: string
 ): boolean {
   if (!entry.credentialUpdatedAt) return true
-  return entry.credentialUpdatedAt !== accountUpdatedAt
+  const cachedMs = Date.parse(entry.credentialUpdatedAt)
+  const accountMs = Date.parse(accountUpdatedAt)
+  if (Number.isNaN(cachedMs) || Number.isNaN(accountMs)) {
+    return entry.credentialUpdatedAt !== accountUpdatedAt
+  }
+  return cachedMs !== accountMs
+}
+
+/** health 写缓存时与列表 updated_at 对齐（profile 同步后 DB 已更新） */
+export function cacheCredentialUpdatedAt(
+  accountUpdatedAt: string,
+  syncedAt?: string
+): string {
+  return syncedAt ?? accountUpdatedAt
 }
 
 /** 是否可直接使用本地缓存展示状态 */

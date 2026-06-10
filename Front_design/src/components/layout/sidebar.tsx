@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
-import { getAuthUser, logout, isAdmin } from "@/lib/auth"
+import { getAuthUser, logout, isAdmin, fetchCurrentUser, userSubline } from "@/lib/auth"
 import { LogOut, AlertTriangle } from "lucide-react"
 import { useEffect, useState } from "react"
 import {
@@ -16,9 +16,13 @@ export function Sidebar() {
   const pathname = usePathname()
   const [mounted, setMounted] = useState(false)
   const [showLogoutDialog, setShowLogoutDialog] = useState(false)
-  const user = typeof window !== "undefined" ? getAuthUser() : null
+  const [user, setUser] = useState<ReturnType<typeof getAuthUser>>(null)
 
-  useEffect(() => { setMounted(true) }, [])
+  useEffect(() => {
+    setMounted(true)
+    setUser(getAuthUser())
+    fetchCurrentUser().then(() => setUser(getAuthUser()))
+  }, [])
 
   const isActive = (href: string) => {
     if (href === "/tasks/new") return pathname === "/tasks/new"
@@ -116,8 +120,8 @@ export function Sidebar() {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-slate-900 truncate">{user.username}</p>
-                <p className="text-xs text-slate-400">
-                  {user.role === "admin" ? "管理员" : "用户"}
+                <p className="text-xs text-slate-400 truncate">
+                  {userSubline(user)}
                 </p>
               </div>
               <button

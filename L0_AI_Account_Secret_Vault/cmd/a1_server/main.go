@@ -54,10 +54,12 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/auth/register", srv.handleRegister)
 	mux.HandleFunc("POST /api/auth/login", srv.handleLogin)
+	mux.HandleFunc("GET /api/auth/me", srv.requireAuth(srv.handleAuthMe))
 	mux.HandleFunc("POST /api/account/bind", srv.requireAuth(srv.handleBind))
 	mux.HandleFunc("POST /api/account/unbind", srv.requireAuth(srv.handleUnbind))
 	mux.HandleFunc("GET /api/account/list", srv.requireAuth(srv.handleList))
 	mux.HandleFunc("GET /api/account/health/{account_id}", srv.requireAuth(srv.handleCookieHealth))
+	mux.HandleFunc("POST /api/account/sync-profile/{account_id}", srv.requireAuth(srv.handleSyncProfile))
 	mux.HandleFunc("GET /api/account/credential/{account_id}", srv.requireAuth(srv.handleGetCredentialForOwner))
 	mux.HandleFunc("POST /api/account/credentials", srv.handleGetCredentials)
 	mux.HandleFunc("GET /healthz", srv.handleHealth)
@@ -140,7 +142,7 @@ func (s *server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		role = "user"
 	}
 
-	user, err := s.rv.Register(r.Context(), req.Username, req.Password, role)
+	user, err := s.rv.Register(r.Context(), req.Username, req.Password, role, "")
 	if err != nil {
 		if logger != nil {
 			logger.Error(logging.ErrDatabaseError, "Register user %s failed: %v", req.Username, err)
@@ -180,11 +182,11 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Username == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "INVALID_INPUT", "username and password are required")
+		writeError(w, http.StatusBadRequest, "INVALID_INPUT", "username or phone and password are required")
 		return
 	}
 
-	user, err := s.rv.Login(r.Context(), req.Username, req.Password)
+	user, err := s.rv.Login(r.Context(), strings.TrimSpace(req.Username), req.Password)
 	if err != nil {
 		if logger != nil {
 			logger.Error(logging.ErrUnauthorized, "Login for user %s failed: %v", req.Username, err)
@@ -207,6 +209,37 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Username: user.Username,
 		Token:    token,
 		Role:     user.Role,
+		Phone:    user.Phone,
+	})
+}
+
+func (s *server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
+	if s.rv == nil {
+		writeError(w, http.StatusNotImplemented, "NOT_AVAILABLE", "user auth requires real mode")
+		return
+	}
+
+	claims := vault.GetAuthClaims(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+		return
+	}
+
+	user, err := s.rv.GetUserByUID(r.Context(), claims.UID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "failed to load user profile")
+		return
+	}
+	if user == nil {
+		writeError(w, http.StatusNotFound, "USER_NOT_FOUND", "user not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, vault.CurrentUserResponse{
+		UID:      user.UID,
+		Username: user.Username,
+		Role:     user.Role,
+		Phone:    user.Phone,
 	})
 }
 
@@ -461,7 +494,7 @@ func (s *server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		role = "user"
 	}
 
-	user, err := s.rv.Register(r.Context(), req.Username, req.Password, role)
+	user, err := s.rv.Register(r.Context(), req.Username, req.Password, role, strings.TrimSpace(req.Phone))
 	if err != nil {
 		if logger != nil {
 			logger.Error(logging.ErrDatabaseError, "Register user %s failed: %v", req.Username, err)
@@ -474,7 +507,11 @@ func (s *server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if claims := vault.GetAuthClaims(r.Context()); claims != nil {
 		operatorUID = claims.UID
 	}
-	s.rv.RecordAdminAudit(r.Context(), operatorUID, "create_user", user.UID, "role: "+role)
+	detail := "role: " + role
+	if strings.TrimSpace(req.Phone) != "" {
+		detail += ", phone set"
+	}
+	s.rv.RecordAdminAudit(r.Context(), operatorUID, "create_user", user.UID, detail)
 
 	writeJSON(w, http.StatusCreated, vault.CreateUserResponse{
 		UID:       user.UID,
@@ -512,7 +549,7 @@ func (s *server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		operatorUID = claims.UID
 	}
 
-	if err := s.rv.UpdateUser(r.Context(), uid, req.Password, req.Role, operatorUID); err != nil {
+	if err := s.rv.UpdateUser(r.Context(), uid, req.Password, req.Role, req.Phone, operatorUID); err != nil {
 		if logger != nil {
 			logger.Error(logging.ErrDatabaseError, "UpdateUser(%s) failed: %v", uid, err)
 		}
@@ -530,14 +567,30 @@ func (s *server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		detail += "role: " + req.Role
 	}
+	if req.Phone != nil {
+		if detail != "" {
+			detail += ", "
+		}
+		if *req.Phone == "" {
+			detail += "phone cleared"
+		} else {
+			detail += "phone updated"
+		}
+	}
 	s.rv.RecordAdminAudit(r.Context(), operatorUID, "update_user", uid, detail)
 
-	writeJSON(w, http.StatusOK, vault.UpdateUserResponse{
+	updated, _ := s.rv.GetUserByUID(r.Context(), uid)
+	resp := vault.UpdateUserResponse{
 		UID:       uid,
-		Username:  "",
-		Role:      req.Role,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	if updated != nil {
+		resp.Username = updated.Username
+		resp.Phone = updated.Phone
+		resp.Role = updated.Role
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
@@ -600,6 +653,35 @@ func (s *server) handleCookieHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *server) handleSyncProfile(w http.ResponseWriter, r *http.Request) {
+	logger := logging.FromContext(r.Context())
+	accountID := r.PathValue("account_id")
+	if accountID == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_INPUT", "account_id is required")
+		return
+	}
+
+	uid := ""
+	if claims := vault.GetAuthClaims(r.Context()); claims != nil {
+		if claims.Role != "admin" {
+			uid = claims.UID
+		}
+	}
+
+	resp, err := s.vault.SyncAccountProfile(r.Context(), vault.SyncProfileRequest{
+		AccountID: accountID,
+		UID:       uid,
+	})
+	if err != nil {
+		if logger != nil {
+			logger.Error(logging.ErrExternalService, "SyncAccountProfile(%s) failed: %v", accountID, err)
+		}
+		writeVaultError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *server) handleGetCredentialForOwner(w http.ResponseWriter, r *http.Request) {
 	logger := logging.FromContext(r.Context())
 	accountID := r.PathValue("account_id")
@@ -636,7 +718,9 @@ type errorResponse struct {
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {

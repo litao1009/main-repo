@@ -9,6 +9,7 @@ export interface AuthUser {
   username: string
   role: "admin" | "user"
   token: string
+  phone?: string
 }
 
 let memoryUser: AuthUser | null = null
@@ -17,7 +18,12 @@ export function setAuthUser(user: AuthUser) {
   memoryUser = user
   try {
     localStorage.setItem(JWT_KEY, user.token)
-    localStorage.setItem(USER_KEY, JSON.stringify({ uid: user.uid, username: user.username, role: user.role }))
+    localStorage.setItem(USER_KEY, JSON.stringify({
+      uid: user.uid,
+      username: user.username,
+      role: user.role,
+      ...(user.phone ? { phone: user.phone } : {}),
+    }))
   } catch { /* ignore */ }
 }
 
@@ -60,11 +66,14 @@ export function clearAuth() {
   } catch { /* ignore */ }
 }
 
-export async function login(username: string, password: string): Promise<AuthUser> {
+export async function login(account: string, password: string): Promise<AuthUser> {
+  const normalized = /^\d[\d\s-]*$/.test(account.trim())
+    ? account.replace(/\D/g, "")
+    : account.trim()
   const resp = await fetch(`${API_BASE}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username: normalized, password }),
   })
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}))
@@ -76,6 +85,7 @@ export async function login(username: string, password: string): Promise<AuthUse
     username: data.username,
     role: data.role,
     token: data.token,
+    ...(data.phone ? { phone: String(data.phone) } : {}),
   }
   setAuthUser(user)
   return user
@@ -88,7 +98,7 @@ export function logout() {
   }
 }
 
-export async function fetchCurrentUser(): Promise<{ uid: string; username: string; role: string } | null> {
+export async function fetchCurrentUser(): Promise<{ uid: string; username: string; role: string; phone?: string } | null> {
   const token = getToken()
   if (!token) return null
   try {
@@ -97,8 +107,29 @@ export async function fetchCurrentUser(): Promise<{ uid: string; username: strin
     })
     if (!resp.ok) return null
     const data = await resp.json()
-    return data.data || null
+    const profile = data.data || data
+    if (!profile?.uid) return null
+
+    const current = getAuthUser()
+    if (current) {
+      setAuthUser({
+        ...current,
+        uid: profile.uid,
+        username: profile.username,
+        role: profile.role,
+        phone: profile.phone ? String(profile.phone) : undefined,
+      })
+    }
+    return profile
   } catch {
     return null
   }
+}
+
+export function userRoleLabel(role: "admin" | "user") {
+  return role === "admin" ? "管理员" : "用户"
+}
+
+export function userSubline(user: Pick<AuthUser, "phone" | "role">) {
+  return user.phone || userRoleLabel(user.role)
 }

@@ -6,11 +6,16 @@ import { AnimatePresence, motion } from "framer-motion"
 import { toast } from "sonner"
 import {
   sendTaskMessage, publishTask, fetchTask, fetchAccounts,
-  stopTask, fetchTaskMessages, clearTaskMessages,
+  fetchTaskMessages, clearTaskMessages,
   getBookInfo, getBookContent,
+  fetchAutoPublishTaskStatus, stopAutoPublishTask, restartAutoPublishTask, deleteAutoPublishTask,
 } from "@/lib/api"
 import { getPlatformLabel } from "@/lib/platform-label"
-import { isAdmin } from "@/lib/auth"
+import {
+  AutoPublishHeaderStatus,
+  AutoPublishRunToggle,
+} from "@/lib/auto-publish-status"
+import type { AutoPublishTaskStatusData } from "@/types"
 import {
   connectChatTaskWS,
   connectTaskWS,
@@ -43,6 +48,9 @@ import {
 
 /** 停留在任务详情页期间，定时刷新左侧章节列表（与是否在等 AI 回复无关） */
 const BOOK_INFO_POLL_INTERVAL_MS = 15_000
+
+/** 本版本暂不支持用户向 AI 发送会话，仅隐藏输入区（逻辑保留） */
+const TASK_DETAIL_CHAT_INPUT_ENABLED = false
 
 function parseMessageTime(timestamp?: string): Date | null {
   if (!timestamp) return null
@@ -408,6 +416,9 @@ export default function SessionPage() {
   const [deleting, setDeleting] = useState(false)
   const [clearingChat, setClearingChat] = useState(false)
   const [publishChapterId, setPublishChapterId] = useState("")
+  const [autoPublishStatus, setAutoPublishStatus] = useState<AutoPublishTaskStatusData | null>(null)
+  const [autoPublishStatusLoading, setAutoPublishStatusLoading] = useState(true)
+  const [publishToggleLoading, setPublishToggleLoading] = useState(false)
 
   const [tabsOverflow, setTabsOverflow] = useState(false)
   const [toolCallActive, setToolCallActive] = useState(false)
@@ -714,6 +725,57 @@ export default function SessionPage() {
 
   const refreshBookInfoRef = useRef(refreshBookInfo)
   refreshBookInfoRef.current = refreshBookInfo
+
+  const refreshAutoPublishStatus = useCallback(async () => {
+    if (!taskId) return null
+    try {
+      const data = await fetchAutoPublishTaskStatus(taskId)
+      setAutoPublishStatus(data)
+      return data
+    } catch {
+      setAutoPublishStatus((prev) =>
+        prev ?? {
+          task_id: taskId,
+          auto_publish_status: "queued",
+          auto_publish_queue_position: -1,
+        },
+      )
+      return null
+    } finally {
+      setAutoPublishStatusLoading(false)
+    }
+  }, [taskId])
+
+  const refreshAutoPublishStatusRef = useRef(refreshAutoPublishStatus)
+  refreshAutoPublishStatusRef.current = refreshAutoPublishStatus
+
+  useEffect(() => {
+    setAutoPublishStatus(null)
+    setAutoPublishStatusLoading(true)
+  }, [taskId])
+
+  useEffect(() => {
+    if (!taskId) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+
+    const scheduleNextPoll = () => {
+      timer = setTimeout(async () => {
+        if (cancelled) return
+        await refreshAutoPublishStatusRef.current()
+        if (!cancelled) scheduleNextPoll()
+      }, BOOK_INFO_POLL_INTERVAL_MS)
+    }
+
+    void refreshAutoPublishStatusRef.current().finally(() => {
+      if (!cancelled) scheduleNextPoll()
+    })
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [taskId])
 
   useEffect(() => {
     knownChapterIdsRef.current = new Set()
@@ -1149,19 +1211,37 @@ export default function SessionPage() {
 
   const handleDelete = async () => {
     if (!taskId) return
-    const uid = getAuthUser()?.uid
-    if (!uid) {
+    if (!getAuthUser()?.uid) {
       toast.error("请先登录")
       return
     }
     setDeleting(true)
     try {
-      await stopTask(taskId, uid)
+      await deleteAutoPublishTask(taskId)
       router.replace(resolveTaskListReturnUrl(searchParams))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "操作失败")
       setDeleting(false)
       setShowDeleteModal(false)
+    }
+  }
+
+  const handlePublishToggle = async (nextRunning: boolean) => {
+    if (!taskId || publishToggleLoading) return
+    setPublishToggleLoading(true)
+    try {
+      if (nextRunning) {
+        await restartAutoPublishTask(taskId)
+        toast.success("已重新加入发布队列")
+      } else {
+        await stopAutoPublishTask(taskId)
+        toast.success("已暂停自动发布")
+      }
+      await refreshAutoPublishStatus()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "操作失败")
+    } finally {
+      setPublishToggleLoading(false)
     }
   }
 
@@ -1177,8 +1257,8 @@ export default function SessionPage() {
     <div className="h-screen flex flex-col overflow-hidden bg-slate-50">
 
       {/* ── 顶部 Header ── */}
-      <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-4 shrink-0 z-20 shadow-sm">
-        <div className="flex items-center gap-2 min-w-0">
+      <header className="min-h-14 py-2 bg-white border-b border-slate-200 flex items-center justify-between px-4 gap-3 shrink-0 z-20 shadow-sm">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           <button
             onClick={returnToTaskList}
             className="p-2 text-slate-400 hover:text-slate-700 transition-colors rounded-lg hover:bg-slate-100 shrink-0"
@@ -1186,32 +1266,43 @@ export default function SessionPage() {
           >
             <ArrowLeft size={18} />
           </button>
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="flex items-center gap-3 min-w-0">
-              <h1 className="text-lg font-bold text-slate-900 truncate leading-tight tracking-tight min-w-0 shrink">
+          <div className="flex flex-col min-w-0 flex-1">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-wrap">
+              <h1 className="text-lg font-bold text-slate-900 truncate leading-tight tracking-tight min-w-0">
                 {novelName || "未命名作品"}
               </h1>
               {publishHeaderMeta ? (
                 <span
-                  className="text-sm font-medium text-slate-500 truncate shrink-0 max-w-[min(40vw,12rem)] sm:max-w-xs"
+                  className="text-sm font-medium text-slate-500 truncate max-w-[min(40vw,12rem)] sm:max-w-xs shrink-0"
                   title={publishHeaderMeta}
                 >
                   {publishHeaderMeta}
                 </span>
               ) : null}
+              <AutoPublishHeaderStatus
+                data={autoPublishStatus}
+                loading={autoPublishStatusLoading}
+              />
             </div>
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {authMounted && isAdmin() && (
-            <button
-              type="button"
-              onClick={() => setShowDeleteModal(true)}
-              className="px-3 py-1.5 text-sm font-medium text-slate-500 bg-white border border-slate-200 rounded-md hover:bg-red-50 hover:text-red-500 hover:border-red-200 transition-colors flex items-center gap-1.5 shadow-sm"
-            >
-              <Trash2 size={14} />
-              删除
-            </button>
+          {authMounted && !autoPublishStatusLoading && autoPublishStatus?.auto_publish_status !== "deleted" && (
+            <>
+              <AutoPublishRunToggle
+                autoPublishStatus={autoPublishStatus?.auto_publish_status}
+                loading={publishToggleLoading}
+                onToggle={handlePublishToggle}
+              />
+              <button
+                type="button"
+                onClick={() => setShowDeleteModal(true)}
+                className="px-3 py-1.5 text-sm font-medium text-slate-500 bg-white border border-slate-200 rounded-md hover:bg-red-50 hover:text-red-500 hover:border-red-200 transition-colors flex items-center gap-1.5 shadow-sm"
+              >
+                <Trash2 size={14} />
+                删除
+              </button>
+            </>
           )}
           <button
             type="button"
@@ -1376,6 +1467,7 @@ export default function SessionPage() {
             <div ref={chatEndRef} />
           </div>
 
+          {TASK_DETAIL_CHAT_INPUT_ENABLED ? (
           <div className="px-3 py-2.5 bg-white border-t border-slate-200 shrink-0 space-y-2">
             <div className="flex gap-2 items-center rounded-3xl border border-slate-200 bg-white pl-4 pr-1.5 py-1.5 shadow-sm focus-within:border-orange-300 focus-within:ring-2 focus-within:ring-orange-100/80 transition-all">
               <textarea
@@ -1403,6 +1495,7 @@ export default function SessionPage() {
               Enter 发送 · Shift+Enter 换行
             </p>
           </div>
+          ) : null}
         </section>
 
         {/* 中：卷章树 */}
@@ -1569,7 +1662,7 @@ export default function SessionPage() {
               <p className="text-sm font-medium text-slate-800 mb-2">《{novelName}》</p>
             ) : null}
             <DialogDescription className="text-sm text-slate-500 leading-relaxed">
-              将中止当前任务流程，已生成内容不会删除
+              将从自动发布队列中移除该任务，已生成的章节内容不会删除。
             </DialogDescription>
           </div>
           <DialogFooter className="flex-row gap-3 border-t border-slate-100 bg-slate-50/80 px-6 py-4 sm:justify-stretch">

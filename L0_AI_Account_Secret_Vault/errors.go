@@ -80,7 +80,21 @@ var (
 
 	ErrUserExists = &SecretError{
 		Code:       "USER_EXISTS",
-		Message:    "username already exists",
+		Message:    "用户名已存在",
+		HTTPStatus: http.StatusConflict,
+		Retryable:  false,
+	}
+
+	ErrInvalidUsername = &SecretError{
+		Code:       "INVALID_USERNAME",
+		Message:    "用户名须为 3–32 位，以字母或数字开头，仅可包含字母、数字、下划线、点、连字符",
+		HTTPStatus: http.StatusBadRequest,
+		Retryable:  false,
+	}
+
+	ErrPhoneExists = &SecretError{
+		Code:       "PHONE_EXISTS",
+		Message:    "手机号已被其他用户使用",
 		HTTPStatus: http.StatusConflict,
 		Retryable:  false,
 	}

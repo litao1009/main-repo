@@ -28,10 +28,12 @@ CREATE TABLE IF NOT EXISTS a1_credentials (
 CREATE TABLE IF NOT EXISTS a1_users (
     uid         VARCHAR(64)  NOT NULL PRIMARY KEY COMMENT '用户唯一标识',
     username    VARCHAR(128) NOT NULL COMMENT '用户名',
+    phone       VARCHAR(32)  DEFAULT NULL COMMENT '手机号（可选）',
     password    VARCHAR(256) NOT NULL COMMENT 'bcrypt 密码哈希',
     created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '注册时间',
     updated_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
-    UNIQUE KEY uk_username (username)
+    UNIQUE KEY uk_username (username),
+    UNIQUE KEY uk_phone (phone)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='用户认证表';
 

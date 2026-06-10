@@ -188,6 +188,15 @@ func probeZhulangLogin(ctx context.Context, cookieStr string) (valid bool, err e
 	return false, nil
 }
 
+// probeQimaoLogin 请求七猫作者 profile 接口，code==200 表示登录有效。
+func probeQimaoLogin(ctx context.Context, cookieStr string) (valid bool, err error) {
+	_, err = FetchQimaoProfile(ctx, cookieStr)
+	if err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
 // checkPlatformCookieExpiry 按平台分发到对应的检测函数。
 //
 // 返回：
@@ -211,6 +220,12 @@ func checkPlatformCookieExpiry(ctx context.Context, platform, cookieStr string) 
 			if parseCookieField(cookieStr, "PHPSESSID") != "" {
 				return true, nil
 			}
+			return false, ErrPlatformNotSupported
+		}
+		return valid, nil
+	case "qimao":
+		valid, err = probeQimaoLogin(ctx, cookieStr)
+		if err != nil {
 			return false, ErrPlatformNotSupported
 		}
 		return valid, nil

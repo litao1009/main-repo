@@ -16,7 +16,7 @@ func normalizeAvatarURLForPlatform(platform, avatarURL string) string {
 
 func requiresPlatformAuthorID(platform string) bool {
 	switch platform {
-	case "fanqie", "zhulang":
+	case "fanqie", "zhulang", "qimao":
 		return true
 	default:
 		return false

@@ -19,6 +19,7 @@ var zhulangUIDPattern = regexp.MustCompile(`uid\s*:\s*"(\d+)"`)
 // ResolvePlatformAuthorID 从凭证明文解析平台侧作者唯一标识。
 // 番茄：account/info 接口的 mp_name（如 番茄2510925974999303）
 // 逐浪：作家专区页面内嵌 uid（如 69108505）
+// 七猫：/api/author/profile 的 account_id（如 2921296）
 func ResolvePlatformAuthorID(ctx context.Context, platform, credentialsPlaintext string) (string, error) {
 	credentialsPlaintext = strings.TrimSpace(credentialsPlaintext)
 	if credentialsPlaintext == "" {
@@ -30,6 +31,8 @@ func ResolvePlatformAuthorID(ctx context.Context, platform, credentialsPlaintext
 		return resolveFanqieAuthorID(ctx, credentialsPlaintext)
 	case "zhulang":
 		return resolveZhulangAuthorID(ctx, credentialsPlaintext)
+	case "qimao":
+		return resolveQimaoAuthorID(ctx, credentialsPlaintext)
 	default:
 		return "", nil
 	}
@@ -85,4 +88,15 @@ func resolveZhulangAuthorID(ctx context.Context, cookieStr string) (string, erro
 		return "", fmt.Errorf("zhulang identity: uid not found in writer page")
 	}
 	return string(m[1]), nil
+}
+
+func resolveQimaoAuthorID(ctx context.Context, cookieStr string) (string, error) {
+	info, err := FetchQimaoProfile(ctx, cookieStr)
+	if err != nil {
+		return "", err
+	}
+	if info.AccountID == "" {
+		return "", fmt.Errorf("qimao identity: account_id empty")
+	}
+	return info.AccountID, nil
 }

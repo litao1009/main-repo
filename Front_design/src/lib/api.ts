@@ -9,6 +9,7 @@ import type {
   UnbindRequest,
   UnbindResponse,
   CookieHealthResponse,
+  SyncProfileResponse,
   AccountCredentialResponse,
   TaskCreateInput,
   TaskCreateResponse,
@@ -39,6 +40,8 @@ import type {
   BookContentResponse,
   TaskPublishListResponse,
   PublishRecord,
+  AutoPublishTaskStatusData,
+  AutoPublishQueueResponse,
 } from "@/types"
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || ""
@@ -148,14 +151,16 @@ export async function unbindAccount(accountId: string): Promise<UnbindResponse> 
 }
 
 /**
- * 检测账号 Cookie 是否仍有效。
+ * 检测账号 Cookie 是否仍有效，并在有效时同步平台资料（一次平台请求）。
  * 后端路由：GET /api/account/health/:account_id
- * 后端逻辑：用存储的 cookie 向对应平台发一次轻量探测请求（如获取用户信息），
- * 成功则返回 valid=true，失败（401/403/解析失败）则返回 valid=false。
- * 若后端尚未实现此路由，前端会捕获错误并将该账号标记为 'unknown'。
  */
 export async function checkCookieHealth(accountId: string): Promise<CookieHealthResponse> {
   return get<CookieHealthResponse>(`/api/account/health/${accountId}`)
+}
+
+/** @deprecated 资料同步已合并进 checkCookieHealth，保留仅供兼容旧调用 */
+export async function syncAccountProfile(accountId: string): Promise<SyncProfileResponse> {
+  return post<SyncProfileResponse>(`/api/account/sync-profile/${accountId}`, {})
 }
 
 /** 用户自取账号凭证明文（仅用于 Cookie 注入回浏览器），凭证不应落 localStorage */
@@ -310,6 +315,59 @@ export async function deleteUser(uid: string): Promise<{ deleted: boolean }> {
 
 export async function updateTask(taskId: string, body: { novel_name?: string }): Promise<void> {
   await post<unknown>(`/api/task/${taskId}/update`, body)
+}
+
+function unwrapBffData<T>(resp: unknown): T {
+  const raw = resp as Record<string, unknown>
+  if (typeof raw.code === "number" && raw.code !== 0) {
+    throw new Error(String(raw.message || "请求失败"))
+  }
+  return (raw.data ?? raw) as T
+}
+
+// ===== 自动发布任务队列 =====
+
+export async function fetchAutoPublishTaskStatus(taskId: string): Promise<AutoPublishTaskStatusData> {
+  const resp = await get<unknown>(`/api/auto_publish_task/status?task_id=${encodeURIComponent(taskId)}`)
+  const raw = unwrapBffData<Record<string, unknown>>(resp)
+  const queuePos = raw.auto_publish_queue_position ?? raw.queue_position
+  return {
+    task_id: String(raw.task_id ?? taskId),
+    auto_publish_status: (raw.auto_publish_status ?? raw.status) as AutoPublishTaskStatusData["auto_publish_status"],
+    running: raw.running as boolean | undefined,
+    chapter_number: raw.chapter_number as number | undefined,
+    auto_publish_queue_position:
+      typeof queuePos === "number" ? queuePos : queuePos != null ? Number(queuePos) : undefined,
+    auto_publish_entry_time: (raw.auto_publish_entry_time ?? raw.entry_time) as string | undefined,
+    last_executed_at: raw.last_executed_at as string | undefined,
+    recoverable_at: raw.recoverable_at as string | undefined,
+    auto_publish_error_message: (raw.auto_publish_error_message ?? raw.error_message) as string | null | undefined,
+  }
+}
+
+export async function fetchAutoPublishQueue(): Promise<AutoPublishQueueResponse> {
+  const resp = await get<unknown>("/api/auto_publish_task/queue")
+  return unwrapBffData<AutoPublishQueueResponse>(resp)
+}
+
+export async function stopAutoPublishTask(taskId: string): Promise<{ task_id: string; status: string }> {
+  const resp = await post<unknown>("/api/auto_publish_task/stop", { task_id: taskId })
+  return unwrapBffData(resp)
+}
+
+export async function restartAutoPublishTask(taskId: string): Promise<{ task_id: string; status: string }> {
+  const resp = await post<unknown>("/api/auto_publish_task/restart", { task_id: taskId })
+  return unwrapBffData(resp)
+}
+
+export async function deleteAutoPublishTask(taskId: string): Promise<{ task_id: string; status: string }> {
+  const resp = await post<unknown>("/api/auto_publish_task/delete", { task_id: taskId })
+  return unwrapBffData(resp)
+}
+
+export async function setAutoPublishMaxSlots(maxSlots: number): Promise<{ max_slots: number; current_running: number }> {
+  const resp = await put<unknown>("/api/config/auto-publish-slots", { max_slots: maxSlots })
+  return unwrapBffData(resp)
 }
 
 export interface TaskStopResult {

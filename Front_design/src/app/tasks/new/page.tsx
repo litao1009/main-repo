@@ -5,20 +5,22 @@ import { useRouter } from "next/navigation"
 import { Textarea } from "@/components/ui/input"
 import { Select as SelectRadix, SelectItem } from "@/components/ui/select"
 import { fetchModels, fetchAccounts, createTask, createSession, allocSkill } from "@/lib/api"
+import { filterPublishableAccounts } from "@/lib/account-health"
 import type { Model, AccountSummary, AllocSkillItem } from "@/types"
 import { Loader2 } from "lucide-react"
 import { toast } from "@/components/ui/toast"
 import { TAG_CATEGORIES, buildPrompt } from "@/lib/tags"
 import type { TagItem, TagCategoryKey } from "@/lib/tags"
-import { cn } from "@/lib/utils"
+import { cn, normalizeFanqieAvatarUrl } from "@/lib/utils"
 import { buildTaskDetailHref } from "@/lib/task-navigation"
 
 type SelectedTags = Record<TagCategoryKey, TagItem[]>
 function getEmptySelection(): SelectedTags { return { main: [], theme: [], role: [], plot: [] } }
 
 const PLATFORM_OPTS = [
-  { value: "fanqie",  label: "番茄小说", bg: "bg-red-50",  text: "text-red-500",  char: "番" },
-  { value: "zhulang", label: "逐浪网",   bg: "bg-blue-50", text: "text-blue-500", char: "逐" },
+  { value: "fanqie",  label: "番茄小说", bg: "bg-red-50",   text: "text-red-500",  char: "番" },
+  { value: "qimao",   label: "七猫",     bg: "bg-amber-50", text: "text-amber-600", char: "七", devOnly: true },
+  { value: "zhulang", label: "逐浪网",   bg: "bg-blue-50",  text: "text-blue-500", char: "逐", devOnly: true },
 ]
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || ""
@@ -37,15 +39,8 @@ function FieldHeader({ label, required, hint }: { label: string; required?: bool
   )
 }
 
-function parseCategoryTags(category: string): string[] {
-  return category
-    .split(/[/／|]/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-}
-
-/** 封面固定高度，避免 3:4 通栏把卡片拉得过高、行间参差不齐 */
-const SKILL_COVER_H = "h-[200px]"
+/** 封面 3:4 */
+const SKILL_COVER = "aspect-[3/4] w-full"
 const SKILL_CARD_GRID =
   "grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4 xl:grid-cols-5"
 
@@ -93,12 +88,11 @@ function SkillCoverImage({ src, alt }: { src: string; alt: string }) {
 
 function SkillCardSkeleton() {
   return (
-    <div className="flex flex-col overflow-hidden rounded-lg border border-slate-200 bg-white animate-pulse">
-      <div className={cn(SKILL_COVER_H, "w-full shrink-0 bg-slate-200")} />
-      <div className="space-y-2 p-3">
-        <div className="h-9 bg-slate-200 rounded w-[90%]" />
-        <div className="h-5 w-24 bg-slate-100 rounded" />
-        <div className="h-8 space-y-1">
+    <div className="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white animate-pulse">
+      <div className={cn(SKILL_COVER, "shrink-0 bg-slate-200")} />
+      <div className="px-3 py-2.5">
+        <div className="h-4 bg-slate-200 rounded w-[90%]" />
+        <div className="mt-2 space-y-1.5">
           <div className="h-3 bg-slate-100 rounded w-full" />
           <div className="h-3 bg-slate-100 rounded w-[85%]" />
         </div>
@@ -116,65 +110,38 @@ function SkillSelectCard({
   selected: boolean
   onToggle: () => void
 }) {
-  const tags = parseCategoryTags(skill.category)
-  const visibleTags = tags.slice(0, 2)
-  const extraTagCount = tags.length - visibleTags.length
-
   return (
     <button
       type="button"
       onClick={onToggle}
       className={cn(
-        "group flex flex-col overflow-hidden rounded-lg border-2 bg-white text-left transition-all",
+        "group relative flex flex-col rounded-xl border bg-white text-left transition-all",
         selected
-          ? "border-orange-500 shadow-sm"
-          : "border-slate-200 hover:border-slate-300 hover:shadow-sm",
+          ? "border-orange-400 bg-orange-50"
+          : "border-slate-200 hover:border-orange-300",
       )}
     >
-      <div className={cn("relative w-full shrink-0 overflow-hidden bg-slate-100", SKILL_COVER_H)}>
+      {selected && (
+        <span className="absolute -top-2 -right-2 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-orange-500 shadow-sm">
+          <svg className="h-3 w-3" fill="none" stroke="white" viewBox="0 0 24 24" aria-hidden>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+          </svg>
+        </span>
+      )}
+      <div className={cn("relative shrink-0 overflow-hidden rounded-t-xl bg-slate-100", SKILL_COVER)}>
         <SkillCoverImage src={coverUrl(skill.cover_image)} alt={skill.name} />
-        {selected && (
-          <span className="absolute top-2 right-2 flex h-5 w-5 items-center justify-center rounded-full bg-orange-500 shadow ring-2 ring-white">
-            <svg className="h-3 w-3" fill="none" stroke="white" viewBox="0 0 24 24" aria-hidden>
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-            </svg>
-          </span>
-        )}
       </div>
 
-      <div className="p-3">
+      <div className="px-3 py-2.5">
         <h3
-          className="h-9 text-sm font-semibold leading-[18px] text-slate-900 line-clamp-2"
+          className="truncate text-sm font-semibold leading-4 text-slate-900"
           title={skill.name}
         >
           {skill.name}
         </h3>
 
-        <div className="mt-1.5 flex h-5 items-center gap-1 overflow-hidden">
-          {visibleTags.length > 0 ? (
-            visibleTags.map((tag) => (
-              <span
-                key={tag}
-                className="shrink-0 max-w-[46%] truncate rounded px-1.5 py-0.5 text-[10px] text-slate-600 bg-slate-100"
-                title={tag}
-              >
-                {tag}
-              </span>
-            ))
-          ) : (
-            <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-slate-400 bg-slate-100">
-              未分类
-            </span>
-          )}
-          {extraTagCount > 0 && (
-            <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-slate-400 bg-slate-50">
-              +{extraTagCount}
-            </span>
-          )}
-        </div>
-
         <p
-          className="mt-2 h-8 text-[11px] leading-4 text-slate-500 line-clamp-2"
+          className="mt-2 text-[11px] leading-relaxed text-slate-500 line-clamp-2"
           title={skill.description}
         >
           {skill.description || "暂无简介"}
@@ -200,6 +167,7 @@ export default function NewTaskPage() {
   const [selectedAccountId, setSelectedAccountId] = useState("")
   const [selectedSkillId, setSelectedSkillId] = useState("")
   const [accountLoading, setAccountLoading] = useState(false)
+  const [allAccountsInvalid, setAllAccountsInvalid] = useState(false)
   const [skillsBusy, setSkillsBusy] = useState(false)
   const [showSkillSkeleton, setShowSkillSkeleton] = useState(false)
   const [isAuto, setIsAuto] = useState(true)
@@ -255,11 +223,23 @@ export default function NewTaskPage() {
     setSelectedAccountId("")
     setSelectedSkillId("")
     setAccounts([])
+    setAllAccountsInvalid(false)
     setAccountLoading(true)
     beginSkillsFetch()
     fetchAccounts(platform)
-      .then(accs => setAccounts(Array.isArray(accs) ? accs : []))
-      .catch(() => setAccounts([]))
+      .then(async (accs) => {
+        const list = Array.isArray(accs) ? accs : []
+        const valid = await filterPublishableAccounts(list)
+        setAllAccountsInvalid(list.length > 0 && valid.length === 0)
+        setAccounts(valid)
+        setSelectedAccountId(prev =>
+          prev && valid.some(a => a.account_id === prev) ? prev : "",
+        )
+      })
+      .catch(() => {
+        setAccounts([])
+        setAllAccountsInvalid(false)
+      })
       .finally(() => setAccountLoading(false))
     allocSkill({ platform })
       .then((s) => {
@@ -377,6 +357,10 @@ export default function NewTaskPage() {
                   key={opt.value} type="button"
                   onClick={() => {
                     if (opt.value === platform) return
+                    if (opt.devOnly) {
+                      toast.error(`${opt.label}平台正在开发中，敬请期待`)
+                      return
+                    }
                     setSelectedAccountId("")
                     setSelectedSkillId("")
                     setAccounts([])
@@ -384,7 +368,7 @@ export default function NewTaskPage() {
                     setPlatform(opt.value)
                   }}
                   className={cn(
-                    "relative flex flex-col items-center justify-center gap-2 py-5 rounded-xl border-2 transition-all",
+                    "relative flex min-h-16 items-center gap-2.5 rounded-xl border p-3 text-left transition-all",
                     sel ? "border-orange-400 bg-orange-50" : "border-slate-200 bg-white hover:border-orange-300"
                   )}
                 >
@@ -395,12 +379,21 @@ export default function NewTaskPage() {
                       </svg>
                     </span>
                   )}
-                  <div className={cn("w-10 h-10 rounded-full flex items-center justify-center font-bold text-base", opt.bg, opt.text)}>
+                  <div
+                    className={cn(
+                      "flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold ring-1 ring-slate-200",
+                      opt.bg,
+                      opt.text
+                    )}
+                  >
                     {opt.char}
                   </div>
-                  <span className={cn("text-sm font-medium", sel ? "text-orange-700" : "text-slate-700")}>
+                  <p className={cn(
+                    "min-w-0 flex-1 truncate text-sm font-semibold leading-none",
+                    sel ? "text-orange-700" : "text-slate-900"
+                  )}>
                     {opt.label}
-                  </span>
+                  </p>
                 </button>
               )
             })}
@@ -410,41 +403,88 @@ export default function NewTaskPage() {
         {/* 发布账号 */}
         <div>
           <FieldHeader label="发布账号" required hint="单选" />
-          <div className="min-h-9">
+          <div>
             {accountLoading ? (
               <div className="flex h-9 items-center gap-2 text-sm text-slate-400">
                 <Loader2 size={14} className="animate-spin shrink-0 text-orange-500" />
                 <span>加载中...</span>
               </div>
             ) : accounts.length === 0 ? (
-              <p className="flex h-9 items-center text-sm text-slate-400">
-                该平台暂无绑定账号，请先到
-                <a href="/accounts" className="text-orange-500 underline mx-1">账号配置</a>
-                绑定
+              <p className="flex min-h-9 flex-wrap items-center text-sm text-slate-400">
+                {allAccountsInvalid ? (
+                  <>
+                    该平台账号均已登录失效，请先到
+                    <a href="/accounts" className="text-orange-500 underline mx-1">账号配置</a>
+                    重新登录
+                  </>
+                ) : (
+                  <>
+                    该平台暂无绑定账号，请先到
+                    <a href="/accounts" className="text-orange-500 underline mx-1">账号配置</a>
+                    绑定
+                  </>
+                )}
               </p>
             ) : (
-              <div className="flex flex-wrap gap-2.5">
+              <div className="grid grid-cols-5 gap-3">
                 {accounts.map(acc => {
                   const sel = selectedAccountId === acc.account_id
+                  const icon = PLATFORM_OPTS.find(p => p.value === acc.platform) ?? PLATFORM_OPTS[0]
+                  const avatarSrc = acc.platform === "fanqie"
+                    ? normalizeFanqieAvatarUrl(acc.avatar_url)
+                    : acc.avatar_url
                   return (
                     <button
-                      key={acc.account_id} type="button"
+                      key={acc.account_id}
+                      type="button"
                       onClick={() => setSelectedAccountId(acc.account_id)}
                       className={cn(
-                        "inline-flex h-9 items-center gap-2 px-4 rounded-lg border text-sm transition-all",
+                        "relative flex items-center gap-2.5 rounded-xl border p-3 text-left transition-all",
                         sel
-                          ? "border-orange-400 bg-orange-50 text-orange-700 font-medium"
-                          : "border-slate-200 bg-white text-slate-600 hover:border-orange-300"
+                          ? "border-orange-400 bg-orange-50"
+                          : "border-slate-200 bg-white hover:border-orange-300"
                       )}
                     >
                       {sel && (
-                        <span className="w-3.5 h-3.5 rounded-full bg-orange-500 flex items-center justify-center flex-shrink-0">
-                          <svg className="w-2" fill="none" stroke="white" viewBox="0 0 24 24">
+                        <span className="absolute -top-2 -right-2 w-5 h-5 bg-orange-500 rounded-full flex items-center justify-center shadow-sm">
+                          <svg className="w-3 h-3" fill="none" stroke="white" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7"/>
                           </svg>
                         </span>
                       )}
-                      {acc.masked_display}
+                      <div className="relative h-10 w-10 shrink-0 rounded-full ring-1 ring-slate-200">
+                        <div
+                          className={cn(
+                            "absolute inset-0 flex items-center justify-center rounded-full text-sm font-semibold ring-1 ring-black/5",
+                            icon.bg,
+                            icon.text
+                          )}
+                        >
+                          {icon.char}
+                        </div>
+                        {avatarSrc && (
+                          <img
+                            src={avatarSrc}
+                            alt=""
+                            className="absolute inset-0 h-10 w-10 rounded-full object-cover ring-2 ring-white"
+                            onError={(e) => { e.currentTarget.remove() }}
+                          />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className={cn(
+                            "truncate text-xs font-semibold leading-tight",
+                            sel ? "text-orange-700" : "text-slate-900"
+                          )}
+                          title={acc.masked_display}
+                        >
+                          {acc.masked_display}
+                        </p>
+                        <p className="mt-0.5 min-h-4 truncate text-xs tabular-nums text-slate-500">
+                          {acc.phone_number || "\u00A0"}
+                        </p>
+                      </div>
                     </button>
                   )
                 })}
@@ -596,6 +636,10 @@ export default function NewTaskPage() {
                     if (!taskId) throw new Error("创建任务失败：未返回 task_id")
 
                     if (isAuto) {
+                      if (taskResp.data?.auto_publish_started === false) {
+                        toast.error("任务已创建，但未能加入发布队列")
+                        return
+                      }
                       router.replace(buildTaskDetailHref(taskId, { platform, from: "new" }))
                       return
                     }

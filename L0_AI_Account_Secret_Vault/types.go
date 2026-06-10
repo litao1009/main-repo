@@ -7,7 +7,7 @@ type RegisterRequest struct {
 	Role     string `json:"role"`
 }
 
-// LoginRequest 用户登录请求。
+// LoginRequest 用户登录请求（username 字段可填用户名或手机号）。
 type LoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -19,12 +19,22 @@ type AuthResponse struct {
 	Username string `json:"username"`
 	Token    string `json:"token"`
 	Role     string `json:"role"`
+	Phone    string `json:"phone,omitempty"`
+}
+
+// CurrentUserResponse 当前登录用户资料。
+type CurrentUserResponse struct {
+	UID      string `json:"uid"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
+	Phone    string `json:"phone,omitempty"`
 }
 
 // AdminUserInfo 管理员查看的用户信息（含统计数据）。
 type AdminUserInfo struct {
 	UID          string `json:"uid"`
 	Username     string `json:"username"`
+	Phone        string `json:"phone,omitempty"`
 	Role         string `json:"role"`
 	AccountCount int    `json:"accountCount"`
 	TaskCount    int    `json:"taskCount"`
@@ -43,6 +53,7 @@ type CreateUserRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	Role     string `json:"role"`
+	Phone    string `json:"phone,omitempty"`
 }
 
 // CreateUserResponse 创建用户响应。
@@ -55,14 +66,16 @@ type CreateUserResponse struct {
 
 // UpdateUserRequest 管理员修改用户请求。
 type UpdateUserRequest struct {
-	Password string `json:"password"`
-	Role     string `json:"role"`
+	Password string  `json:"password"`
+	Role     string  `json:"role"`
+	Phone    *string `json:"phone,omitempty"`
 }
 
 // UpdateUserResponse 修改用户响应。
 type UpdateUserResponse struct {
 	UID       string `json:"uid"`
 	Username  string `json:"username"`
+	Phone     string `json:"phone,omitempty"`
 	Role      string `json:"role"`
 	UpdatedAt string `json:"updatedAt"`
 }
@@ -225,10 +238,11 @@ type CheckCookieHealthRequest struct {
 	UID string
 }
 
-// CheckCookieHealthResponse 登录状态检测结果。
+// CheckCookieHealthResponse 登录状态检测结果；valid 时可能附带已同步的资料。
 type CheckCookieHealthResponse struct {
 	AccountID string `json:"account_id"`
 	// Valid true = Cookie 在有效期内；false = 已过期或解析失败。
-	Valid     bool   `json:"valid"`
-	CheckedAt string `json:"checked_at"`
+	Valid     bool                `json:"valid"`
+	CheckedAt string              `json:"checked_at"`
+	Profile   *SyncProfileResponse `json:"profile,omitempty"`
 }

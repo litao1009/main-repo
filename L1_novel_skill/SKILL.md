@@ -75,7 +75,7 @@ use_skill("novel-shadow-creator")
   "description": "中文简介，150-200字，适合小说平台展示",
   "description_en": "English description, 80-120 words",
   "cover_image": "./cover.png",
-  "cover_prompt": "生成封面时使用的英文prompt",
+  "cover_prompt": "生成封面时使用的中文prompt",
   "genre": "中文类型标签",
   "genre_en": "English Genre Tags",
   "word_count_target": 200000,
@@ -84,7 +84,7 @@ use_skill("novel-shadow-creator")
   "shadow_intensity": 0.5,
   "protagonist": "主角名 (Name)",
   "setting": "故事背景",
-  "cover_generated_by": "Pollinations.ai",
+  "cover_generated_by": "混元 TextToImageLite",
   "cover_resolution": "768x1024 (3:4)",
   "created_at": "YYYY-MM-DD"
 }
@@ -92,38 +92,50 @@ use_skill("novel-shadow-creator")
 
 ## 封面生成 (cover.png)
 
-使用免费生图API **Pollinations.ai** 生成小说封面，无需注册、无API Key、免费使用。
+使用混元生图 API（TextToImageLite）生成小说封面。
 
-### API格式
-```
-https://image.pollinations.ai/prompt/{URL-encoded-prompt}?width=768&height=1024&nologo=true
+### 前置条件
+
+在项目根目录 `config.json` 中填写腾讯云密钥：
+
+```json
+{
+  "tencent_secret_id": "你的SecretId",
+  "tencent_secret_key": "你的SecretKey"
+}
 ```
 
-### 参数说明
+### 调用方式
+
+```bash
+python3 scripts/generate_cover.py \
+  --prompt "中文封面描述..." \
+  --output {source-name}-shadow/cover.png
+```
+
+### API参数（脚本内置）
 | 参数 | 值 | 说明 |
 |------|----|------|
-| width | 768 | 宽度（3:4比例） |
-| height | 1024 | 高度（3:4比例） |
-| nologo | true | 去除水印 |
-| model | flux (默认) | 生成模型 |
+| Resolution | 768:1024 | 3:4竖版比例 |
+| LogoAdd | 0 | 不添加水印 |
+| RspImgType | url | 返回图片URL |
 
 ### 封面Prompt编写原则
-1. 必须以 `Anime book cover illustration, 3:4 vertical` 开头
+1. 使用中文描述，越详细越好（上限1024字符）
 2. 描述主角外貌特征和姿态
 3. 描述场景/背景氛围
-4. 指定色调和美术风格
-5. 结尾加 `Chinese light novel cover art style`
-6. prompt必须为英文，以获得最佳生图效果
+4. 指定色调和美术风格（如"古风二次元""都市二次元"）
+5. 可用 `--negative-prompt` 参数排除不希望出现的元素
 
 ### 生成示例
 ```bash
-curl -s -o cover.png \
-  "https://image.pollinations.ai/prompt/Anime%20book%20cover%20illustration%2C%2034%20vertical.%20{具体描述}.%20Chinese%20light%20novel%20cover%20art%20style?width=768&height=1024&nologo=true"
+python3 scripts/generate_cover.py \
+  --prompt "古风二次元小说封面，白衣少年持剑立于竹林雨中，远处有古寺轮廓，青绿色调，水墨渲染风格" \
+  --output ./dream-red-mansion-shadow/cover.png
 ```
 
 ### 注意事项
-- 该API每次只允许1个并发请求，需串行生成
-- 生图耗时约3-10秒
+- 每次只允许1个并发请求，需串行生成
 - 建议根据生成结果调整prompt重试，直到封面效果满意
 
 ## 7大不崩机制

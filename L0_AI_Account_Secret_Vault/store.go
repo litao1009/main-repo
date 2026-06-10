@@ -63,7 +63,7 @@ func (s *CredentialStore) FindByUID(ctx context.Context, uid string, platform st
 		query += " AND platform = ?"
 		args = append(args, platform)
 	}
-	query += " ORDER BY updated_at DESC"
+	query += " ORDER BY created_at ASC"
 	if limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, limit, offset)
@@ -125,6 +125,53 @@ func (s *CredentialStore) FindByAccountID(ctx context.Context, accountID string)
 		return nil, fmt.Errorf("query credential by id: %w", err)
 	}
 	return cred, nil
+}
+
+// FindAccountForSync 读取同步资料所需的账号字段（含凭证与 profile）。
+func (s *CredentialStore) FindAccountForSync(ctx context.Context, accountID string) (*AccountCredential, error) {
+	query := `
+		SELECT account_id, uid, platform, credential, masked_display, phone_number, avatar_url, is_auth, identity_code_mask, identity_name_mask, created_at, updated_at
+		FROM a1_credentials
+		WHERE account_id = ?
+	`
+	cred := &AccountCredential{}
+	var phone, avatar, identityCode, identityName sql.NullString
+	var isAuth sql.NullBool
+	err := s.db.QueryRowContext(ctx, query, accountID).Scan(
+		&cred.AccountID, &cred.UID, &cred.Platform, &cred.Credential, &cred.MaskedDisplay,
+		&phone, &avatar, &isAuth, &identityCode, &identityName,
+		&cred.CreatedAt, &cred.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("%w: %s", ErrAccountNotFound, accountID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query account for sync: %w", err)
+	}
+	scanProfileFields(phone, avatar, isAuth, identityCode, identityName, cred)
+	return cred, nil
+}
+
+// UpdateProfile 仅更新资料字段，不触碰凭证。
+func (s *CredentialStore) UpdateProfile(ctx context.Context, cred *AccountCredential) error {
+	query := `
+		UPDATE a1_credentials
+		SET masked_display = ?, phone_number = ?, avatar_url = ?, is_auth = ?, identity_code_mask = ?, identity_name_mask = ?, updated_at = ?
+		WHERE account_id = ?
+	`
+	isAuthVal := 0
+	if cred.IsAuth {
+		isAuthVal = 1
+	}
+	_, err := s.db.ExecContext(ctx, query,
+		nullIfEmpty(cred.MaskedDisplay), nullIfEmpty(cred.PhoneNumber), nullIfEmpty(cred.AvatarURL), isAuthVal,
+		nullIfEmpty(cred.IdentityCodeMask), nullIfEmpty(cred.IdentityNameMask),
+		cred.UpdatedAt, cred.AccountID,
+	)
+	if err != nil {
+		return fmt.Errorf("update profile: %w", err)
+	}
+	return nil
 }
 
 // FindByUIDWithCiphertext 查询用户指定平台的完整凭证（含 credential 列，用于 bind 时检查 IsNewBinding）。
@@ -384,7 +431,7 @@ func (s *CredentialStore) FindAll(ctx context.Context, platform string, offset i
 		query += " AND platform = ?"
 		args = append(args, platform)
 	}
-	query += " ORDER BY updated_at DESC"
+	query += " ORDER BY created_at ASC"
 	if limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, limit, offset)

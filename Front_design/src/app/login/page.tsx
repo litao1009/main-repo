@@ -7,7 +7,7 @@ import { Eye, EyeOff, Loader2 } from "lucide-react"
 
 export default function LoginPage() {
   const router = useRouter()
-  const [username, setUsername] = useState("")
+  const [account, setAccount] = useState("")
   const [password, setPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -17,8 +17,8 @@ export default function LoginPage() {
     e.preventDefault()
     setError("")
 
-    if (!username.trim()) {
-      setError("请输入用户名")
+    if (!account.trim()) {
+      setError("请输入用户名或手机号")
       return
     }
     if (password.length < 8) {
@@ -28,7 +28,7 @@ export default function LoginPage() {
 
     setLoading(true)
     try {
-      await login(username.trim(), password)
+      await login(account, password)
       router.replace("/tasks")
     } catch (err) {
       setError(err instanceof Error ? err.message : "登录失败")
@@ -110,16 +110,17 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label htmlFor="username" className="block text-sm font-medium text-slate-700 mb-1.5">
-                用户名
+              <label htmlFor="account" className="block text-sm font-medium text-slate-700 mb-1.5">
+                用户名 / 手机号
               </label>
               <input
-                id="username"
+                id="account"
                 type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="请输入用户名"
+                value={account}
+                onChange={(e) => setAccount(e.target.value)}
+                placeholder="请输入用户名或手机号"
                 autoFocus
+                autoComplete="username"
                 className="w-full h-10 px-3.5 bg-white border border-slate-200 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-500/15 transition-colors text-sm shadow-sm"
               />
             </div>

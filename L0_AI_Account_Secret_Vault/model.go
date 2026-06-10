@@ -24,6 +24,7 @@ type AccountCredential struct {
 type User struct {
 	UID               string     `db:"uid"`
 	Username          string     `db:"username"`
+	Phone             string     `db:"phone"`
 	Password          string     `db:"password"`
 	Role              string     `db:"role"`
 	PasswordChangedAt *time.Time `db:"password_changed_at"`

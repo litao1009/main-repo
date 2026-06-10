@@ -13,9 +13,10 @@ import {
   invalidateCache,
   getBulkCached,
   shouldUseHealthCache,
+  cacheCredentialUpdatedAt,
   type CookieHealthStatus,
 } from "@/lib/cookie-health-cache"
-import type { AccountSummary } from "@/types"
+import type { AccountSummary, SyncProfileResponse } from "@/types"
 import { formatRelativeTime, normalizeFanqieAvatarUrl } from "@/lib/utils"
 import {
   Shield, Plus, Loader2, CheckCircle, AlertCircle, RefreshCw, ExternalLink, LogIn,
@@ -23,24 +24,60 @@ import {
 
 const PLATFORM_LABELS: Record<string, string> = {
   fanqie: "番茄小说",
+  qimao: "七猫",
   xhs: "小红书",
   wechat: "微信公众号",
   yuewen: "阅文",
   zhulang: "逐浪网",
 }
 
-const PLATFORM_ORDER = ["fanqie", "zhulang", "xhs", "wechat", "yuewen"]
+const PLATFORM_ORDER = ["fanqie", "qimao", "zhulang", "xhs", "wechat", "yuewen"]
+
+/** 绑定弹窗可选平台 */
+const BIND_PLATFORM_OPTIONS = [
+  { value: "fanqie",  label: "番茄小说", bg: "bg-red-50",   text: "text-red-500",   char: "番" },
+  { value: "qimao",   label: "七猫",     bg: "bg-amber-50", text: "text-amber-600", char: "七" },
+  { value: "zhulang", label: "逐浪网",   bg: "bg-blue-50",  text: "text-blue-500",  char: "逐" },
+] as const
+
+const PROFILE_PLATFORMS = new Set<string>(['fanqie', 'zhulang', 'qimao'])
+
+/** 本版本临时限制：每个平台最多绑定账号数（后续版本可放开） */
+const MAX_ACCOUNTS_PER_PLATFORM = 4
+
+function countPlatformAccounts(accounts: AccountSummary[], plt: string): number {
+  return accounts.filter((a) => a.platform === plt).length
+}
+
+function isPlatformAccountLimitReached(accounts: AccountSummary[], plt: string): boolean {
+  return countPlatformAccounts(accounts, plt) >= MAX_ACCOUNTS_PER_PLATFORM
+}
+
+function platformAccountLimitMessage(plt: string): string {
+  const label = PLATFORM_LABELS[plt] || plt
+  return `${label}最多绑定 ${MAX_ACCOUNTS_PER_PLATFORM} 个账号`
+}
+
+/** 支持 Cookie 注入并打开作家后台的平台 */
+const OPEN_PLATFORM_BTN_CLASS = 'bg-orange-500 hover:bg-orange-600'
+
+const OPEN_PLATFORM_META: Record<string, { title: string }> = {
+  fanqie:  { title: '打开番茄作家后台' },
+  qimao:   { title: '打开七猫作家后台' },
+  zhulang: { title: '打开逐浪作家后台' },
+}
 
 /** 各平台卡片图标配色 */
 const PLATFORM_ICON: Record<string, { bg: string; text: string; char: string }> = {
   fanqie: { bg: "bg-red-50",    text: "text-red-500",    char: "番" },
+  qimao:  { bg: "bg-amber-50",  text: "text-amber-600",  char: "七" },
   zhulang: { bg: "bg-blue-50",  text: "text-blue-500",   char: "逐" },
   xhs:     { bg: "bg-rose-100", text: "text-rose-600",   char: "红" },
   wechat:  { bg: "bg-green-50", text: "text-green-600",  char: "微" },
   yuewen:  { bg: "bg-purple-50",text: "text-purple-500", char: "阅" },
 }
 
-type CaptureStatus = 'idle' | 'running' | 'author_pending' | 'done' | 'error'
+type CaptureStatus = 'idle' | 'running' | 'author_pending' | 'done' | 'error' | 'login_only'
 type DisplayStatus = CookieHealthStatus | 'checking'
 
 type CaptureProfile = {
@@ -51,11 +88,33 @@ type CaptureProfile = {
   identity_name_mask?: string
 }
 
+function mergeProfileIntoAccount(acc: AccountSummary, profile: SyncProfileResponse): AccountSummary {
+  return {
+    ...acc,
+    masked_display: profile.masked_display || acc.masked_display,
+    phone_number: profile.phone_number || acc.phone_number,
+    avatar_url: profile.avatar_url || acc.avatar_url,
+    is_auth: profile.is_auth,
+    identity_code_mask: profile.is_auth ? (profile.identity_code_mask || acc.identity_code_mask) : undefined,
+    identity_name_mask: profile.is_auth ? (profile.identity_name_mask || acc.identity_name_mask) : undefined,
+    updated_at: profile.synced_at,
+  }
+}
+
 /** 番茄「已实名」点击展开的脱敏信息浮层 */
 function AuthIdentityBadge({ acc }: { acc: AccountSummary }) {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
-  const hasIdentity = !!(acc.is_auth && (acc.identity_name_mask || acc.identity_code_mask))
+  const hasIdentity = !!(
+    acc.is_auth && (
+      acc.platform === 'qimao'
+        ? false
+        : acc.platform === 'zhulang'
+        ? acc.identity_name_mask && acc.identity_code_mask
+        : acc.identity_name_mask || acc.identity_code_mask
+    )
+  )
+  const showQimaoAuthTip = acc.platform === 'qimao' && acc.is_auth
 
   useEffect(() => {
     if (!open) return
@@ -66,22 +125,22 @@ function AuthIdentityBadge({ acc }: { acc: AccountSummary }) {
     return () => document.removeEventListener('mousedown', onDocClick)
   }, [open])
 
-  if (acc.platform !== 'fanqie') return null
+  if (!['fanqie', 'zhulang', 'qimao'].includes(acc.platform)) return null
 
   return (
     <div ref={wrapRef} className="relative shrink-0">
       <button
         type="button"
-        disabled={!acc.is_auth || !hasIdentity}
-        onClick={() => hasIdentity && setOpen(v => !v)}
+        disabled={!acc.is_auth || (!hasIdentity && !showQimaoAuthTip)}
+        onClick={() => (hasIdentity || showQimaoAuthTip) && setOpen(v => !v)}
         className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors ${
           acc.is_auth
-            ? hasIdentity
+            ? (hasIdentity || showQimaoAuthTip)
               ? 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 cursor-pointer'
               : 'bg-emerald-50 text-emerald-600 cursor-default'
             : 'bg-slate-100 text-slate-400 cursor-default'
         }`}
-        title={hasIdentity ? '点击查看实名信息' : acc.is_auth ? '已实名' : '未实名'}
+        title={hasIdentity ? '点击查看实名信息' : showQimaoAuthTip ? '点击查看实名状态' : acc.is_auth ? '已实名' : '未实名'}
       >
         {acc.is_auth ? '已实名' : '未实名'}
       </button>
@@ -103,6 +162,15 @@ function AuthIdentityBadge({ acc }: { acc: AccountSummary }) {
               <span className="font-medium">{acc.identity_code_mask}</span>
             </div>
           )}
+        </div>
+      )}
+      {open && showQimaoAuthTip && !hasIdentity && (
+        <div
+          role="tooltip"
+          className="absolute left-1/2 bottom-[calc(100%+6px)] z-30 w-max max-w-[220px] -translate-x-1/2 rounded-lg border border-slate-200/90 bg-slate-900 px-3 py-2 text-xs text-white shadow-lg"
+        >
+          <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-slate-900" />
+          <p className="text-slate-300">七猫平台已实名（接口未返回脱敏证件信息）</p>
         </div>
       )}
     </div>
@@ -196,12 +264,23 @@ export default function AccountsPage() {
         const status: CookieHealthStatus =
           result.status === 'fulfilled' ? (result.value.valid ? 'valid' : 'expired') : 'unknown'
         next[id] = status
+        const syncedAt = result.status === 'fulfilled' ? result.value.profile?.synced_at : undefined
         setCachedEntry(id, {
           status,
           checkedAt: Date.now(),
           source: 'backend',
-          credentialUpdatedAt: acc.updated_at,
+          credentialUpdatedAt: cacheCredentialUpdatedAt(acc.updated_at, syncedAt),
         })
+      })
+      return next
+    })
+    setAccounts(prev => {
+      let next = prev
+      results.forEach((result, i) => {
+        if (result.status === 'fulfilled' && result.value.profile) {
+          const id = accs[i].account_id
+          next = next.map(a => a.account_id === id ? mergeProfileIntoAccount(a, result.value.profile!) : a)
+        }
       })
       return next
     })
@@ -254,8 +333,11 @@ export default function AccountsPage() {
         status,
         checkedAt: Date.now(),
         source: 'backend',
-        credentialUpdatedAt: acc?.updated_at,
+        credentialUpdatedAt: cacheCredentialUpdatedAt(acc?.updated_at ?? '', res.profile?.synced_at),
       })
+      if (res.profile) {
+        setAccounts(prev => prev.map(a => a.account_id === accountId ? mergeProfileIntoAccount(a, res.profile!) : a))
+      }
     } catch {
       setCookieStatusMap(prev => ({ ...prev, [accountId]: 'unknown' }))
       setCachedEntry(accountId, {
@@ -280,7 +362,9 @@ export default function AccountsPage() {
       }
       switch (type) {
         case 'FANQIE_CAPTURE_STATUS':
-          if (status === 'busy') {
+          if (status === 'window_opened') {
+            setCaptureStatus('login_only')
+          } else if (status === 'busy') {
             setCaptureStatus('error')
           } else if (status === 'author_pending') {
             setCaptureStatus('author_pending')
@@ -348,25 +432,37 @@ export default function AccountsPage() {
     if (captureTimeoutRef.current) { clearTimeout(captureTimeoutRef.current); captureTimeoutRef.current = null }
   }
 
-  const handleCancelCapture = () => {
-    window.postMessage({ type: 'FANQIE_CAPTURE_CANCEL', platform }, '*')
+  const resolveCapturePlatform = (context: 'bind' | 'relogin') =>
+    context === 'relogin' && reLoginTarget ? reLoginTarget.platform : platform
+
+  const handleCancelCapture = (context: 'bind' | 'relogin' = 'bind') => {
+    window.postMessage({ type: 'FANQIE_CAPTURE_CANCEL', platform: resolveCapturePlatform(context) }, '*')
     resetCaptureState()
   }
 
   const handleAutoCapture = (context: 'bind' | 'relogin' = 'bind') => {
+    const capturePlatform = resolveCapturePlatform(context)
+    if (context === 'bind' && isPlatformAccountLimitReached(accounts, capturePlatform)) {
+      toast.error(platformAccountLimitMessage(capturePlatform))
+      return
+    }
     captureContextRef.current = context
     setCaptureStatus('running')
     setCaptureMessage('正在连接扩展...')
     captureTimeoutRef.current = setTimeout(() => {
       setCaptureStatus('error')
-      setCaptureMessage('未检测到「番茄账号管家」扩展，请安装并启用后重试')
+      setCaptureMessage('未检测到「铸文坊账号管家」扩展，请安装并启用后重试')
     }, 5000)
-    window.postMessage({ type: 'FANQIE_CAPTURE_START', platform, mode: context }, '*')
+    window.postMessage({ type: 'FANQIE_CAPTURE_START', platform: resolveCapturePlatform(context), mode: context }, '*')
   }
 
   const handleBind = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!credentials.trim()) return
+    if (isPlatformAccountLimitReached(accounts, platform)) {
+      setBindDialogError(platformAccountLimitMessage(platform))
+      return
+    }
     setBinding(true)
     setBindDialogError(null)
     try {
@@ -375,14 +471,14 @@ export default function AccountsPage() {
         credentials.trim(),
         (capturedDisplayName || displayName).trim() || undefined,
         undefined,
-        platform === 'fanqie' ? capturedProfile ?? undefined : undefined,
+        PROFILE_PLATFORMS.has(platform) ? capturedProfile ?? undefined : undefined,
       )
       invalidateCache(resp.account_id)
       setCredentials("")
       setDisplayName("")
       setShowBindModal(false)
       toast.success("绑定成功")
-      loadAccounts()
+      await loadAccounts({ forceRecheck: true })
     } catch (err) {
       setBindDialogError(err instanceof Error ? err.message : "绑定失败")
     } finally {
@@ -390,7 +486,7 @@ export default function AccountsPage() {
     }
   }
 
-  const handleOpenFanqie = async (acc: AccountSummary) => {
+  const handleOpenPlatform = async (acc: AccountSummary) => {
     setInjectStatusMap(prev => ({ ...prev, [acc.account_id]: 'injecting' }))
     try {
       const resp = await fetchAccountCredential(acc.account_id)
@@ -423,7 +519,7 @@ export default function AccountsPage() {
         reLoginCredentials.trim(),
         (capturedDisplayName || reLoginTarget.masked_display).trim() || undefined,
         reLoginTarget.account_id,
-        reLoginTarget.platform === 'fanqie' ? capturedProfile ?? undefined : undefined,
+        PROFILE_PLATFORMS.has(reLoginTarget.platform) ? capturedProfile ?? undefined : undefined,
       )
       invalidateCache(resp.account_id)
       setReLoginTarget(null)
@@ -448,6 +544,7 @@ export default function AccountsPage() {
   }
 
   const filteredAccounts = accountFilter ? accounts.filter(a => a.platform === accountFilter) : accounts
+  const bindPlatformAtLimit = isPlatformAccountLimitReached(accounts, platform)
 
   // 按平台分组
   const grouped = PLATFORM_ORDER.reduce<Record<string, AccountSummary[]>>((acc, p) => {
@@ -477,7 +574,8 @@ export default function AccountsPage() {
     const label =
       isChecking ? '检测中' :
       displayStatus === 'valid' ? '有效' :
-      displayStatus === 'expired' ? '失效' : '待检测'
+      displayStatus === 'expired' ? '失效' :
+      displayStatus === 'unknown' && entry?.source === 'backend' ? '检测失败' : '待检测'
 
     return (
       <div className="flex items-center gap-1.5 min-w-0 text-xs text-slate-400 whitespace-nowrap">
@@ -532,6 +630,7 @@ export default function AccountsPage() {
         {[
           { value: "",        label: "全部平台" },
           { value: "fanqie",  label: "番茄小说" },
+          { value: "qimao",   label: "七猫"     },
           { value: "zhulang", label: "逐浪网"   },
         ].map(tab => (
           <button
@@ -597,6 +696,8 @@ export default function AccountsPage() {
                     const resolvedStatus: CookieHealthStatus | 'unknown' =
                       isChecking ? (entry?.status ?? 'unknown') : (status ?? 'unknown')
                     const isExpired = resolvedStatus === 'expired'
+                    const openMeta = OPEN_PLATFORM_META[acc.platform]
+                    const showOpenBtn = !!openMeta && !isExpired
                     const avatarSrc = acc.platform === 'fanqie' ? normalizeFanqieAvatarUrl(acc.avatar_url) : acc.avatar_url
 
                     return (
@@ -627,12 +728,15 @@ export default function AccountsPage() {
 
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5 min-w-0">
-                              <h4 className="text-[15px] font-semibold text-slate-900 truncate leading-tight">
+                              <h4
+                                className="min-w-0 truncate text-[15px] font-semibold leading-tight text-slate-900"
+                                title={acc.masked_display}
+                              >
                                 {acc.masked_display}
                               </h4>
                               <AuthIdentityBadge acc={acc} />
                             </div>
-                            {acc.platform === 'fanqie' && acc.phone_number ? (
+                            {acc.phone_number ? (
                               <p className="mt-0.5 text-xs text-slate-500 truncate tabular-nums">{acc.phone_number}</p>
                             ) : (
                               <p className="mt-0.5 text-xs text-slate-400 truncate">{PLATFORM_LABELS[acc.platform] || acc.platform}</p>
@@ -640,13 +744,13 @@ export default function AccountsPage() {
                           </div>
 
                           <div className="flex h-8 w-8 shrink-0 items-center justify-center">
-                            {(status === 'valid' || (status === 'checking' && entry?.status === 'valid')) ? (
+                            {showOpenBtn ? (
                               <button
                                 type="button"
-                                title="打开番茄作家后台"
-                                onClick={() => handleOpenFanqie(acc)}
-                                disabled={status === 'checking' || !!injectStatusMap[acc.account_id]}
-                                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-orange-500 text-white shadow-sm transition-all hover:bg-orange-600 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+                                title={openMeta.title}
+                                onClick={() => handleOpenPlatform(acc)}
+                                disabled={isChecking || !!injectStatusMap[acc.account_id]}
+                                className={`inline-flex h-8 w-8 items-center justify-center rounded-full text-white shadow-sm transition-all hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 ${OPEN_PLATFORM_BTN_CLASS}`}
                               >
                                 {injectStatusMap[acc.account_id] === 'injecting'
                                   ? <Loader2 size={14} className="animate-spin" />
@@ -689,7 +793,7 @@ export default function AccountsPage() {
 
       {/* ── 绑定账号弹窗 ── */}
       <Dialog open={showBindModal} onOpenChange={(open) => { setShowBindModal(open); if (!open) setBindDialogError(null) }}>
-        <DialogContent className="sm:max-w-md" onInteractOutside={(e) => e.preventDefault()}>
+        <DialogContent className="sm:max-w-lg" onInteractOutside={(e) => e.preventDefault()}>
           <DialogHeader>
             <DialogTitle>绑定新账号</DialogTitle>
           </DialogHeader>
@@ -697,43 +801,66 @@ export default function AccountsPage() {
 
             {/* 平台选择 — 成功后锁定 */}
             <div>
-              <p className="text-sm font-medium text-slate-700 mb-2.5">选择平台</p>
-              <div className={`grid grid-cols-2 gap-3 ${captureStatus === 'done' ? "opacity-50 pointer-events-none" : ""}`}>
-                {[
-                  { value: "fanqie",  label: "番茄小说", bg: "bg-red-50",  text: "text-red-500",  char: "番" },
-                  { value: "zhulang", label: "逐浪网",   bg: "bg-blue-50", text: "text-blue-500", char: "逐" },
-                ].map(opt => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => setPlatform(opt.value)}
-                    className={`flex items-center gap-3 p-3 rounded-xl border-2 transition-all text-left ${
-                      platform === opt.value
-                        ? "border-orange-400 bg-orange-50"
-                        : "border-slate-200 bg-white hover:border-slate-300"
-                    }`}
-                  >
-                    <div className={`w-9 h-9 ${opt.bg} ${opt.text} rounded-lg flex items-center justify-center font-bold text-sm flex-shrink-0`}>
-                      {opt.char}
-                    </div>
-                    <span className={`text-sm font-medium ${platform === opt.value ? "text-orange-700" : "text-slate-700"}`}>
-                      {opt.label}
-                    </span>
-                    {platform === opt.value && (
-                      <span className="ml-auto w-4 h-4 rounded-full bg-orange-500 flex items-center justify-center flex-shrink-0">
-                        <svg width="8" height="8" viewBox="0 0 10 10" fill="none">
-                          <path d="M2 5.5l2.5 2.5 4-4" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
+              <p className="text-sm font-medium text-slate-700 mb-3">选择平台</p>
+              <div className={`grid grid-cols-3 gap-2.5 ${captureStatus === 'done' ? "opacity-50 pointer-events-none" : ""}`}>
+                {BIND_PLATFORM_OPTIONS.map(opt => {
+                  const selected = platform === opt.value
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setPlatform(opt.value)}
+                      className={`relative flex flex-col items-center gap-2.5 py-4 px-2 rounded-xl border-2 transition-all ${
+                        selected
+                          ? "border-orange-400 bg-orange-50 shadow-sm"
+                          : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                      }`}
+                    >
+                      {selected && (
+                        <span className="absolute top-2 right-2 w-4 h-4 rounded-full bg-orange-500 flex items-center justify-center">
+                          <svg width="8" height="8" viewBox="0 0 10 10" fill="none" aria-hidden>
+                            <path d="M2 5.5l2.5 2.5 4-4" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                        </span>
+                      )}
+                      <div className={`w-11 h-11 ${opt.bg} ${opt.text} rounded-xl flex items-center justify-center font-bold text-base`}>
+                        {opt.char}
+                      </div>
+                      <span className={`text-sm font-medium text-center leading-snug whitespace-nowrap ${selected ? "text-orange-700" : "text-slate-700"}`}>
+                        {opt.label}
                       </span>
-                    )}
-                  </button>
-                ))}
+                    </button>
+                  )
+                })}
               </div>
+              <p className="mt-2.5 text-xs text-slate-400 text-center">
+                每个平台最多绑定 {MAX_ACCOUNTS_PER_PLATFORM} 个账号 · 选中平台后点击下方按钮，将在新窗口打开登录页
+              </p>
+              {bindPlatformAtLimit ? (
+                <p className="mt-2 text-xs text-amber-600 text-center">
+                  {platformAccountLimitMessage(platform)}，请先解绑后再添加
+                </p>
+              ) : null}
             </div>
 
             {/* 前往登录 / 已完成 */}
             <div>
-              {captureStatus === 'done' ? (
+              {captureStatus === 'login_only' ? (
+                <div className="space-y-3">
+                  <div className="flex items-start gap-2.5 rounded-xl bg-blue-50 border border-blue-100 p-4">
+                    <ExternalLink size={16} className="text-blue-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-sm text-blue-800 leading-relaxed">{captureMessage || '已打开七猫登录页，请在新窗口完成注册/登录。'}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleAutoCapture('bind')}
+                    className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-slate-200 bg-white text-slate-700 text-sm font-medium hover:bg-slate-50 transition-colors"
+                  >
+                    <ExternalLink size={14} />
+                    重新打开登录页
+                  </button>
+                </div>
+              ) : captureStatus === 'done' ? (
                 /* 成功态：显示已完成 + 重新获取链接 */
                 <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-emerald-50 border border-emerald-100">
                   <div className="flex items-center gap-2 text-sm font-medium text-emerald-600">
@@ -754,8 +881,8 @@ export default function AccountsPage() {
                   <button
                     type="button"
                     onClick={() => handleAutoCapture('bind')}
-                    disabled={captureStatus === 'running' || captureStatus === 'author_pending'}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg border-2 border-dashed border-orange-300 bg-orange-50 text-orange-600 hover:bg-orange-100 hover:border-orange-400 disabled:opacity-60 disabled:cursor-not-allowed transition-all text-sm font-medium"
+                    disabled={bindPlatformAtLimit || captureStatus === 'running' || captureStatus === 'author_pending'}
+                    className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
                   >
                     {captureStatus === 'running' || captureStatus === 'author_pending'
                       ? <><Loader2 size={14} className="animate-spin" />{captureStatus === 'author_pending' ? '等待开通作者…' : '正在连接中...'}</>
@@ -767,7 +894,7 @@ export default function AccountsPage() {
                     <AuthorPendingGuide
                       message={captureMessage}
                       onManual={() => window.postMessage({ type: 'FANQIE_MANUAL_CAPTURE', platform }, '*')}
-                      onCancel={handleCancelCapture}
+                      onCancel={() => handleCancelCapture('bind')}
                     />
                   )}
 
@@ -786,18 +913,24 @@ export default function AccountsPage() {
                             请在弹出的窗口中完成登录
                           </p>
                           <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                            登录成功后，新账号需先完成作家入驻，系统会自动检测并回填资料。<br />
+                            {platform === 'fanqie' ? (
+                              <>登录成功后，新账号需先完成作家入驻，系统会自动检测并回填资料。<br /></>
+                            ) : (
+                              <>登录成功后将自动抓取凭证与作者资料并回填。<br /></>
+                            )}
                             <span className="text-orange-400 font-medium">等待期间请勿手动关闭弹出窗口。</span>
                           </p>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => window.postMessage({ type: 'FANQIE_MANUAL_CAPTURE', platform }, '*')}
-                        className="mt-2 text-xs text-slate-400 hover:text-orange-500 underline underline-offset-2 transition-colors block"
-                      >
-                        已登录但未继续？点此手动检测
-                      </button>
+                      {platform === 'fanqie' && (
+                        <button
+                          type="button"
+                          onClick={() => window.postMessage({ type: 'FANQIE_MANUAL_CAPTURE', platform }, '*')}
+                          className="mt-2 text-xs text-slate-400 hover:text-orange-500 underline underline-offset-2 transition-colors block"
+                        >
+                          已登录但未继续？点此手动检测
+                        </button>
+                      )}
                     </div>
                   )}
                 </>
@@ -862,7 +995,7 @@ export default function AccountsPage() {
                 </p>
               )}
               <Button type="button" variant="ghost" onClick={() => setShowBindModal(false)}>取消</Button>
-              <Button type="submit" disabled={binding || !credentials.trim()}>
+              <Button type="submit" disabled={binding || !credentials.trim() || bindPlatformAtLimit}>
                 {binding ? <><Loader2 className="w-4 h-4 animate-spin" />提交中...</> : "完成"}
               </Button>
             </DialogFooter>
@@ -911,7 +1044,7 @@ export default function AccountsPage() {
                     type="button"
                     onClick={() => handleAutoCapture('relogin')}
                     disabled={captureStatus === 'running' || captureStatus === 'author_pending'}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg border-2 border-dashed border-orange-300 bg-orange-50 text-orange-600 hover:bg-orange-100 hover:border-orange-400 disabled:opacity-60 disabled:cursor-not-allowed transition-all text-sm font-medium"
+                    className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
                   >
                     {captureStatus === 'running' || captureStatus === 'author_pending'
                       ? <><Loader2 size={14} className="animate-spin" />{captureStatus === 'author_pending' ? '等待开通作者…' : '正在连接中...'}</>
@@ -923,7 +1056,7 @@ export default function AccountsPage() {
                     <AuthorPendingGuide
                       message={captureMessage}
                       onManual={() => window.postMessage({ type: 'FANQIE_MANUAL_CAPTURE', platform: reLoginTarget.platform }, '*')}
-                      onCancel={handleCancelCapture}
+                      onCancel={() => handleCancelCapture('relogin')}
                     />
                   )}
 

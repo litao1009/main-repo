@@ -13,6 +13,7 @@ import { FileText, Plus, Search, Loader2, AlertCircle, Layers } from "lucide-rea
 import Link from "next/link"
 import { cn, formatChapterLabel } from "@/lib/utils"
 import { getPlatformBadgeStyle } from "@/lib/platform-label"
+import { AutoPublishStatusBadge } from "@/lib/auto-publish-status"
 
 function platformBadge(p: string) {
   const conf = getPlatformBadgeStyle(p)
@@ -29,6 +30,18 @@ const skillLabel = (s: string) => ({
   fanqie_short_v1: "番茄短篇", general_fallback_v1: "通用兜底",
   novel_continuation_ai: "小说续写", "my-novel-writer": "小说写手",
 }[s] || s)
+
+function getTaskCardSubtitle(task: TaskSummary): { text: string; isError: boolean } {
+  const err = task.auto_publish_error_message?.trim()
+  if (err) return { text: err, isError: true }
+  if (task.volume_name && (task.chapter_number ?? 0) > 0 && task.title) {
+    return {
+      text: `${task.volume_name} ${formatChapterLabel(task.chapter_number ?? 0)}：${task.title}`,
+      isError: false,
+    }
+  }
+  return { text: task.topic || "\u00A0", isError: false }
+}
 
 export default function TaskListPage() {
   const router = useRouter()
@@ -140,7 +153,9 @@ export default function TaskListPage() {
       ) : (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-            {tasks.map(task => (
+            {tasks.map(task => {
+              const subtitle = getTaskCardSubtitle(task)
+              return (
               <Link
                 key={task.task_id}
                 href={buildTaskDetailHref(task.task_id, {
@@ -151,18 +166,24 @@ export default function TaskListPage() {
                 })}
                 className="flex flex-col"
               >
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow cursor-pointer p-5 flex-1 flex flex-col">
+                <div
+                  className={cn(
+                    "bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow cursor-pointer p-5 flex-1 flex flex-col",
+                    task.auto_publish_status === "deleted" && "opacity-60",
+                  )}
+                >
 
-                  {/* 平台徽标 + 状态 */}
+                  {/* 平台徽标 + 发布状态 */}
                   <div className="flex items-start justify-between gap-2 mb-4">
                     <div className="flex gap-2">
                       {task.platform ? platformBadge(task.platform) : (
                         <span className="px-2.5 py-1 text-[10px] font-bold tracking-wide text-slate-500 bg-slate-100 border border-slate-200 rounded-md">未设平台</span>
                       )}
                     </div>
-                    <span className="flex items-center text-xs font-medium text-orange-600 bg-orange-50 px-2 py-1 rounded-md flex-shrink-0">
-                      <span className="w-1.5 h-1.5 rounded-full bg-orange-500 mr-1.5 animate-pulse" />AI 生成中
-                    </span>
+                    <AutoPublishStatusBadge
+                      status={task.auto_publish_status}
+                      queuePosition={task.auto_publish_queue_position}
+                    />
                   </div>
 
                   {/* 标题 */}
@@ -170,11 +191,22 @@ export default function TaskListPage() {
                     {task.novel_name || task.topic}
                   </h3>
 
-                  {/* 副标题：固定一行高度，无内容也占位 */}
-                  <p className="mb-4 h-[22px] text-sm leading-[22px] text-slate-500 line-clamp-1 overflow-hidden">
-                    {task.volume_name && (task.chapter_number ?? 0) > 0 && task.title
-                      ? `${task.volume_name} ${formatChapterLabel(task.chapter_number ?? 0)}：${task.title}`
-                      : task.topic || "\u00A0"}
+                  {/* 副标题：固定一行；有错误时显示红色错误信息，否则显示章节/topic */}
+                  <p
+                    className={cn(
+                      "mb-4 h-[22px] text-sm leading-[22px] line-clamp-1 overflow-hidden",
+                      subtitle.isError ? "text-red-600" : "text-slate-500",
+                    )}
+                    title={subtitle.isError ? subtitle.text : undefined}
+                  >
+                    {subtitle.isError ? (
+                      <span className="inline-flex items-center gap-1 min-w-0 max-w-full">
+                        <AlertCircle size={13} className="shrink-0" aria-hidden />
+                        <span className="truncate">{subtitle.text}</span>
+                      </span>
+                    ) : (
+                      subtitle.text
+                    )}
                   </p>
 
                   {/* 模型 & 技能标签 */}
@@ -220,7 +252,8 @@ export default function TaskListPage() {
                   </div>
                 </div>
               </Link>
-            ))}
+              )
+            })}
           </div>
 
           {/* 分页 */}

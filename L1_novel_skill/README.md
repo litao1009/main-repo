@@ -43,5 +43,5 @@
 
 ## 封面生成
 
-使用 [Pollinations.ai](https://pollinations.ai) 免费生图API生成小说封面（3:4比例，无需API Key）。
+使用混元生图 API（TextToImageLite）生成小说封面（3:4比例，768×1024）。
 详见 SKILL.md 中的"封面生成"章节。

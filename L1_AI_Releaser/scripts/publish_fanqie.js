@@ -639,6 +639,17 @@ async function doPublishArticle(cookieStr, input) {
         if (result.code === 0) {
             return { success: true, action: 'publish_article', postId: result.itemId || itemId };
         }
+
+        if (result.code === -1019) {
+            log('warn', 'publish_article daily limit reached', { code: result.code, message: result.message });
+            output({
+                success: false,
+                error: 'publish_article daily limit: code=' + result.code + ' msg=' + (result.message || ''),
+                errorCode: 'DAILY_LIMIT'
+            });
+            return;
+        }
+
         throw new Error('publish_article failed: code=' + result.code + ' msg=' + (result.message || ''));
     } finally { await browser.close().catch(() => {}); _globalBrowser = null; log('info', 'browser closed'); }
 }

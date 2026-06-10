@@ -5,7 +5,9 @@ package c1_publisher
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -288,6 +290,13 @@ func (a *FanqiePublishAdapter) GetPlatformInfo(ctx context.Context, novelName, c
 		WorkID:    workId,
 	}
 
+	authorName, resolveErr := a.ResolveAuthorName(ctx, credentials)
+	if resolveErr != nil {
+		log.Printf("[fanqie] ResolveAuthorName failed: %v", resolveErr)
+	} else {
+		log.Printf("[fanqie] GetPlatformInfo author=%s novel=%s", authorName, novelName)
+	}
+
 	inputBytes, err := json.Marshal(input)
 	if err != nil {
 		return nil, a.fail(ErrCodeBuildRequest, "marshal input failed: "+err.Error(), "")
@@ -548,7 +557,8 @@ func (a *FanqiePublishAdapter) execScript(ctx context.Context, inputBytes []byte
 
 	cmd.Env = append(os.Environ(), "FANQIE_COOKIE="+credentials)
 
-	log.Printf("[fanqie] input: action=%s cookie_len=%d", extractAction(inputBytes), len(credentials))
+	h := sha256.Sum256([]byte(credentials))
+	log.Printf("[fanqie] input: action=%s cookie_len=%d cookie_sha256=%s", extractAction(inputBytes), len(credentials), hex.EncodeToString(h[:4]))
 
 	err := cmd.Run()
 

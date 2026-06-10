@@ -19,6 +19,20 @@ export interface CookieHealthResponse {
   /** true = cookie 仍有效；false = 已过期或失效 */
   valid: boolean
   checked_at: string
+  /** Cookie 有效且成功拉取平台资料时返回（已写库） */
+  profile?: SyncProfileResponse
+}
+
+/** 同步账号资料结果，对应 POST /api/account/sync-profile/:account_id */
+export interface SyncProfileResponse {
+  account_id: string
+  masked_display?: string
+  phone_number?: string
+  avatar_url?: string
+  is_auth?: boolean
+  identity_code_mask?: string
+  identity_name_mask?: string
+  synced_at: string
 }
 
 /** 用户自取凭证结果，对应 GET /api/account/credential/:account_id */
@@ -88,9 +102,43 @@ export interface TaskCreateResponse {
   message?: string
   data?: {
     task_id: string
-    trace_id: string
+    trace_id?: string
+    uid?: string
+    is_auto_publish?: boolean
+    auto_publish_started?: boolean
   }
   trace_id?: string
+}
+
+export type AutoPublishTaskStatus = "queued" | "running" | "stopped" | "deleted"
+
+export interface AutoPublishTaskStatusData {
+  task_id: string
+  auto_publish_status: AutoPublishTaskStatus
+  running?: boolean
+  chapter_number?: number
+  auto_publish_queue_position?: number
+  auto_publish_entry_time?: string
+  last_executed_at?: string
+  recoverable_at?: string
+  auto_publish_error_message?: string | null
+}
+
+export interface AutoPublishQueueResponse {
+  queue: Array<{
+    task_id: string
+    user_id: string
+    platform: string
+    skill_id: string
+    novel_name: string
+    volume_name: string
+    chapter_number: number
+    auto_publish_status: AutoPublishTaskStatus
+    auto_publish_entry_time: string
+    auto_publish_error_message?: string | null
+  }>
+  running_count: number
+  max_slots: number
 }
 
 export interface TaskSummary {
@@ -109,6 +157,11 @@ export interface TaskSummary {
   created_at: string
   last_active_at?: string
   status: string
+  auto_publish_status?: AutoPublishTaskStatus
+  auto_publish_entry_time?: string
+  auto_publish_error_message?: string | null
+  /** queued 时有值，从 1 开始；否则为 -1 或缺省 */
+  auto_publish_queue_position?: number
   draft_version: number
   active_session_id?: string
 }
@@ -321,6 +374,7 @@ export interface SessionMessage {
 export interface AdminUserInfo {
   uid: string
   username: string
+  phone?: string
   role: "admin" | "user"
   accountCount: number
   taskCount: number
@@ -337,6 +391,7 @@ export interface CreateUserRequest {
   username: string
   password: string
   role: "admin" | "user"
+  phone?: string
 }
 
 export interface CreateUserResponse {
@@ -349,6 +404,7 @@ export interface CreateUserResponse {
 export interface UpdateUserRequest {
   password?: string
   role?: "admin" | "user"
+  phone?: string
 }
 
 export interface UpdateUserResponse {

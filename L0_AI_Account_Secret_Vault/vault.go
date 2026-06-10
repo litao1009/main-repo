@@ -45,6 +45,9 @@ type SecretVault interface {
 	// CheckCookieHealth 检测账号 Cookie（登录凭证）是否仍在有效期内。
 	CheckCookieHealth(ctx context.Context, req CheckCookieHealthRequest) (*CheckCookieHealthResponse, error)
 
+	// SyncAccountProfile 用存储的 Cookie 向平台拉取最新资料并写回数据库。
+	SyncAccountProfile(ctx context.Context, req SyncProfileRequest) (*SyncProfileResponse, error)
+
 	// Health 返回模块健康状态。nil = 健康。
 	Health(ctx context.Context) error
 

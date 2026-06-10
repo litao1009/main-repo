@@ -6,6 +6,7 @@ export type PlatformBadgeStyle = {
 /** 任务列表等平台徽标文案与样式，key 为 platform 枚举值 */
 export const PLATFORM_BADGE_STYLES: Record<string, PlatformBadgeStyle> = {
   fanqie: { label: "番茄小说", color: "text-red-600 bg-red-50 border-red-100" },
+  qimao: { label: "七猫", color: "text-amber-600 bg-amber-50 border-amber-100" },
   zhulang: { label: "逐浪网", color: "text-blue-600 bg-blue-50 border-blue-100" },
   xhs: { label: "小红书", color: "text-rose-600 bg-rose-50 border-rose-100" },
   wechat: { label: "公众号", color: "text-green-600 bg-green-50 border-green-100" },

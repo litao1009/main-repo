@@ -3,9 +3,7 @@ package vault
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"fmt"
-	"time"
 )
 
 // RealSecretVault 是 SecretVault 的真实实现，组装所有组件。
@@ -50,56 +48,13 @@ func (v *RealSecretVault) Health(ctx context.Context) error {
 	return v.encryptor.Health(ctx)
 }
 
-// CheckCookieHealth 通过解析存储凭证中的平台 session cookie 来判断登录态是否有效。
-// 不发出任何外部 HTTP 请求，纯本地解析。
+// CheckCookieHealth 检测 Cookie 是否有效；对番茄/逐浪/七猫一次请求同时同步资料。
 func (v *RealSecretVault) CheckCookieHealth(ctx context.Context, req CheckCookieHealthRequest) (*CheckCookieHealthResponse, error) {
-	// 1. 从数据库读取完整凭证记录（含密文）
-	cred, err := v.store.FindByAccountID(ctx, req.AccountID)
-	if err != nil {
-		return nil, err
-	}
-
-	// 2. UID 归属校验：只允许检测自己的账号
-	if req.UID != "" && cred.UID != req.UID {
-		v.audit.Record(ctx, AuditEntry{
-			AccountID: req.AccountID,
-			Action:    "check_cookie_health_denied",
-			Caller:    "bff",
-			Result:    "forbidden",
-			ErrorCode: "UID_MISMATCH",
-		})
-		return nil, ErrUnauthorized
-	}
-
-	// 3. 解密凭证
-	if cred.Credential == "" {
-		return nil, ErrAccountNotFound
-	}
-
-	ciphertext, err := base64.StdEncoding.DecodeString(cred.Credential)
-	if err != nil {
-		return nil, ErrDecryptFailed
-	}
-
-	plaintext, err := v.encryptor.Decrypt(ctx, ciphertext, "v1")
-	if err != nil {
-		return nil, err
-	}
-
-	// 4. 向平台发轻量 HTTP 探测，判断 session 是否仍被服务端认可
-	valid, err := checkPlatformCookieExpiry(ctx, cred.Platform, string(plaintext))
-	if err != nil {
-		return nil, err
-	}
-
-	return &CheckCookieHealthResponse{
-		AccountID: req.AccountID,
-		Valid:     valid,
-		CheckedAt: time.Now().UTC().Format(time.RFC3339),
-	}, nil
+	return v.refreshAccountFromPlatform(ctx, req.AccountID, req.UID, "check_cookie_health")
 }
-func (v *RealSecretVault) Register(ctx context.Context, username, password, role string) (*User, error) {
-	return v.userStore.Create(ctx, username, password, role)
+
+func (v *RealSecretVault) Register(ctx context.Context, username, password, role, phone string) (*User, error) {
+	return v.userStore.Create(ctx, username, password, role, phone)
 }
 
 func (v *RealSecretVault) Login(ctx context.Context, username, password string) (*User, error) {
@@ -110,8 +65,12 @@ func (v *RealSecretVault) ListUsers(ctx context.Context, page, size int, priorit
 	return v.userStore.ListUsers(ctx, page, size, priorityUID)
 }
 
-func (v *RealSecretVault) UpdateUser(ctx context.Context, uid, password, role, operatorUID string) error {
-	return v.userStore.UpdateUser(ctx, uid, password, role, operatorUID)
+func (v *RealSecretVault) UpdateUser(ctx context.Context, uid, password, role string, phone *string, operatorUID string) error {
+	return v.userStore.UpdateUser(ctx, uid, password, role, phone, operatorUID)
+}
+
+func (v *RealSecretVault) GetUserByUID(ctx context.Context, uid string) (*User, error) {
+	return v.userStore.FindByUID(ctx, uid)
 }
 
 func (v *RealSecretVault) DeleteUser(ctx context.Context, uid, operatorUID string) error {

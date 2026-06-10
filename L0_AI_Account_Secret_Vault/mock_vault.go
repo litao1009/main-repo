@@ -362,9 +362,11 @@ func (m *MockSecretVault) Health(ctx context.Context) error {
 	return nil
 }
 
-// CheckCookieHealth mock 实现：直接对凭证做字符串解析，无需解密。
+// CheckCookieHealth mock 实现。
 func (m *MockSecretVault) CheckCookieHealth(ctx context.Context, req CheckCookieHealthRequest) (*CheckCookieHealthResponse, error) {
-	m.mu.RLock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	var cred *AccountCredential
 	for _, c := range m.store {
 		if c.AccountID == req.AccountID {
@@ -372,7 +374,6 @@ func (m *MockSecretVault) CheckCookieHealth(ctx context.Context, req CheckCookie
 			break
 		}
 	}
-	m.mu.RUnlock()
 
 	if cred == nil || cred.Credential == "" {
 		return nil, ErrAccountNotFound
@@ -382,7 +383,6 @@ func (m *MockSecretVault) CheckCookieHealth(ctx context.Context, req CheckCookie
 		return nil, ErrUnauthorized
 	}
 
-	// Mock 模式下凭证以明文（base64 of plaintext）存储
 	ciphertext, err := base64.StdEncoding.DecodeString(cred.Credential)
 	if err != nil {
 		return nil, ErrDecryptFailed
@@ -392,16 +392,38 @@ func (m *MockSecretVault) CheckCookieHealth(ctx context.Context, req CheckCookie
 		return nil, err
 	}
 
-	valid, err := checkPlatformCookieExpiry(ctx, cred.Platform, string(plaintext))
+	valid, profileFetched, err := probeSessionAndApplyProfile(ctx, cred, string(plaintext))
+	checkedAt := time.Now().UTC()
+	resp := &CheckCookieHealthResponse{
+		AccountID: req.AccountID,
+		Valid:     valid,
+		CheckedAt: checkedAt.Format(time.RFC3339),
+	}
 	if err != nil {
 		return nil, err
 	}
+	if valid && profileFetched {
+		cred.UpdatedAt = checkedAt
+		resp.Profile = buildSyncProfileResponse(cred, checkedAt)
+	}
+	return resp, nil
+}
 
-	return &CheckCookieHealthResponse{
+func (m *MockSecretVault) SyncAccountProfile(ctx context.Context, req SyncProfileRequest) (*SyncProfileResponse, error) {
+	resp, err := m.CheckCookieHealth(ctx, CheckCookieHealthRequest{
 		AccountID: req.AccountID,
-		Valid:     valid,
-		CheckedAt: time.Now().UTC().Format(time.RFC3339),
-	}, nil
+		UID:       req.UID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Valid {
+		return nil, ErrInvalidCredentials
+	}
+	if resp.Profile == nil {
+		return nil, ErrPlatformNotSupported
+	}
+	return resp.Profile, nil
 }
 
 // GetCredentialForOwner mock 实现。

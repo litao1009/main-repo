@@ -12,13 +12,33 @@ import (
 
 var fanqieAvatarIDPattern = regexp.MustCompile(`(?i)novel-static/([a-f0-9]+)`)
 
+const fanqieStableAvatarBase = "https://p3-novel.byteimg.com/img/novel-static/"
+
+// sanitizeLiteralJSONEscapes 修复被误存为字面量的 JSON Unicode 转义（如 \u0026）。
+func sanitizeLiteralJSONEscapes(s string) string {
+	s = strings.ReplaceAll(s, `\u0026`, "&")
+	s = strings.ReplaceAll(s, `\u003c`, "<")
+	s = strings.ReplaceAll(s, `\u003e`, ">")
+	return s
+}
+
+func fanqieStableAvatarURL(hash string) string {
+	return fanqieStableAvatarBase + strings.ToLower(hash) + "~tplv-obj.image"
+}
+
+func isFanqieSignedCDNURL(raw string) bool {
+	return strings.Contains(raw, "fqnovelpic.com")
+}
+
 // FanqieAccountInfo 番茄 /api/author/account/info/v0/ 返回的作者资料。
 type FanqieAccountInfo struct {
-	AuthorName  string `json:"author_name"`
-	PhoneNumber string `json:"phone_number"`
-	AvatarURL   string `json:"avatar_url"`
-	IsAuth      bool   `json:"is_auth"`
-	MPName      string `json:"mp_name"`
+	AuthorName       string `json:"author_name"`
+	PhoneNumber      string `json:"phone_number"`
+	AvatarURL        string `json:"avatar_url"`
+	IsAuth           bool   `json:"is_auth"`
+	MPName           string `json:"mp_name"`
+	IdentityCodeMask string `json:"identity_code_mask"`
+	IdentityNameMask string `json:"identity_name_mask"`
 }
 
 // FetchFanqieAccountInfo 用 Cookie 请求番茄作者账号信息接口。
@@ -65,11 +85,13 @@ func FetchFanqieAccountInfo(ctx context.Context, cookieStr string) (*FanqieAccou
 	var result struct {
 		Code int `json:"code"`
 		Data struct {
-			AuthorName  string          `json:"author_name"`
-			PhoneNumber string          `json:"phone_number"`
-			AvatarURL   string          `json:"avatar_url"`
-			IsAuth      json.RawMessage `json:"is_auth"`
-			MPName      string          `json:"mp_name"`
+			AuthorName       string          `json:"author_name"`
+			PhoneNumber      string          `json:"phone_number"`
+			AvatarURL        string          `json:"avatar_url"`
+			IsAuth           json.RawMessage `json:"is_auth"`
+			MPName           string          `json:"mp_name"`
+			IdentityCodeMask string          `json:"identity_code_mask"`
+			IdentityNameMask string          `json:"identity_name_mask"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -79,29 +101,44 @@ func FetchFanqieAccountInfo(ctx context.Context, cookieStr string) (*FanqieAccou
 		return nil, fmt.Errorf("fanqie account info probe code=%d", result.Code)
 	}
 
-	return &FanqieAccountInfo{
+	isAuth := parseFanqieIsAuth(result.Data.IsAuth)
+	info := &FanqieAccountInfo{
 		AuthorName:  strings.TrimSpace(result.Data.AuthorName),
 		PhoneNumber: strings.TrimSpace(result.Data.PhoneNumber),
 		AvatarURL:   NormalizeFanqieAvatarURL(strings.TrimSpace(result.Data.AvatarURL)),
-		IsAuth:      parseFanqieIsAuth(result.Data.IsAuth),
+		IsAuth:      isAuth,
 		MPName:      strings.TrimSpace(result.Data.MPName),
-	}, nil
+	}
+	if isAuth {
+		info.IdentityCodeMask = strings.TrimSpace(result.Data.IdentityCodeMask)
+		info.IdentityNameMask = strings.TrimSpace(result.Data.IdentityNameMask)
+	}
+	return info, nil
 }
 
-// NormalizeFanqieAvatarURL 将番茄私有 CDN 头像链接转为可公开访问的 byteimg 地址。
+// NormalizeFanqieAvatarURL 规范化番茄头像 URL。
+// fqnovelpic 签名 CDN（tos-cn-i-*）须保留完整 query；novel-static 可转为稳定 byteimg 地址。
 func NormalizeFanqieAvatarURL(raw string) string {
-	raw = strings.TrimSpace(raw)
+	raw = sanitizeLiteralJSONEscapes(strings.TrimSpace(raw))
 	if raw == "" {
 		return ""
 	}
-	if strings.Contains(raw, "byteimg.com") {
+	if isFanqieSignedCDNURL(raw) {
 		return raw
 	}
-	if m := fanqieAvatarIDPattern.FindStringSubmatch(raw); len(m) > 1 {
-		return "https://p3-novel.byteimg.com/img/novel-static/" + m[1] + "~tplv-obj.image"
+
+	pathOnly := raw
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		pathOnly = raw[:i]
 	}
-	if strings.HasPrefix(raw, "/") {
-		return "https://fanqienovel.com" + raw
+	if m := fanqieAvatarIDPattern.FindStringSubmatch(pathOnly); len(m) > 1 {
+		return fanqieStableAvatarURL(m[1])
+	}
+	if strings.Contains(pathOnly, "byteimg.com") {
+		return pathOnly
+	}
+	if strings.HasPrefix(pathOnly, "/") {
+		return "https://fanqienovel.com" + pathOnly
 	}
 	return raw
 }
