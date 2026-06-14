@@ -8,18 +8,14 @@
 
 | 依赖 | 版本要求 | 说明 |
 |------|---------|------|
-| Go | 1.21+ | 编译 8 个 Go 后端服务 |
-| Node.js + npm | 18+ | 编译 Next.js 前端 |
-| opencode CLI | 最新版 | AI 写作引擎，核心依赖 |
-| MySQL | 8.0+ | 数据库，需本地运行在 `127.0.0.1:3306` |
-| Python 3 | 3.6+ | 封面生成脚本（可选） |
-| pillow (PIL) | - | Python 图片处理库（可选） |
+| Go | 1.21+ | 编译 8 个 Go 后端服务（需手动安装） |
+| Node.js + npm | 18+ | 编译 Next.js 前端（脚本会自动安装） |
+| opencode CLI | 最新版 | AI 写作引擎（脚本会自动安装） |
+| MySQL | 8.0+ | 数据库（脚本会自动安装并配置） |
+| Python 3 | 3.6+ | 封面生成脚本（可选，脚本不自动安装） |
+| pillow (PIL) | - | Python 图片处理库（可选）
 
-**opencode 安装**：
-```bash
-npm install -g @anthropic/opencode
-# 或参考: https://opencode.ai/docs/install
-```
+**仅需手动安装 Go**，其余依赖均由脚本自动检测并安装。
 
 ### 2. 必须配置（缺一不可）
 
@@ -72,16 +68,21 @@ export TEAM_DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ### 3. 启动所有服务
 
 ```bash
-cd main-repo
-bash start_all.sh
+# 必须以 root 权限执行（脚本会自动提权）
+sudo bash start_all.sh
+# 或者直接用 root 用户执行
 ```
 
 启动脚本会自动完成：
-1. 清理旧进程
-2. 检查前置条件
-3. 初始化数据库（自动建库建表，已存在则跳过）
-4. 编译所有 Go 模块 + 前端
-5. 按顺序启动 9 个服务并健康检查
+1. **自动提权到 root**（如果不是 root）
+2. **自动安装 MySQL**（如果未安装）并启动服务
+3. **自动配置 MySQL root 密码**（默认 `claw123`，可通过 `MYSQL_ROOT_PASSWORD` 覆盖）
+4. **自动安装 opencode**（如果未安装，含 Node.js/npm 依赖）
+5. 清理旧进程
+6. 检查前置条件（TEAM_DEEPSEEK_API_KEY、keys.json、config.json 等）
+7. 初始化数据库（自动建库建表，已存在则跳过）
+8. 编译所有 Go 模块 + 前端
+9. 按顺序启动 9 个服务并健康检查
 
 ### 4. 服务端口对照
 

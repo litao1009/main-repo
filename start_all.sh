@@ -1,10 +1,27 @@
 #!/usr/bin/env bash
 # ============================================================
 #  全模块后端 + 前端服务启动脚本 (main-repo 版本)
-#  用法: bash start_all.sh
+#  用法: sudo bash start_all.sh   (必须以 root 权限执行)
 #  要求: 在 main-repo 根目录下执行
 # ============================================================
 set -euo pipefail
+
+# ========== 权限检查 & 自动提权 ==========
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[WARN] 当前非 root 用户，正在尝试切换到 root..."
+    if command -v sudo &>/dev/null; then
+        exec sudo bash "$0" "$@"
+    else
+        echo "[FATAL] sudo 不可用且当前非 root，无法继续。请使用 root 用户执行此脚本。"
+        exit 1
+    fi
+fi
+
+# 确认已切换到 root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[FATAL] 无法获取 root 权限，退出。"
+    exit 1
+fi
 
 # ========== 路径常量（相对于脚本所在目录） ==========
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,23 +41,25 @@ DATA_DIR="/tmp/sm_demo"
 LOG_DIR="/tmp/logs"
 
 # ========== 运行时用户检测 ==========
-# 优先使用当前用户；如果当前用户是 root，则尝试使用 admin
 RUN_USER="${RUN_USER:-}"
 if [ -z "$RUN_USER" ]; then
-    if [ "$(id -u)" -eq 0 ]; then
-        if id admin &>/dev/null; then
-            RUN_USER="admin"
-        else
-            RUN_USER="$(whoami)"
-        fi
+    if id admin &>/dev/null; then
+        RUN_USER="admin"
     else
-        RUN_USER="$(whoami)"
+        # 找最近登录的非 root 用户
+        RUN_USER=$(last -1 | awk '{print $1}' | grep -v '^$' | grep -v '^root$' | head -1)
+        if [ -z "$RUN_USER" ]; then
+            RUN_USER=$(who am i 2>/dev/null | awk '{print $1}' | head -1)
+        fi
+        if [ -z "$RUN_USER" ] || [ "$RUN_USER" = "root" ]; then
+            RUN_USER="root"
+        fi
     fi
 fi
 
-# sudo 包装函数（无需 sudo 时直接执行）
+# 以指定用户身份执行命令（root 下直接切用户，非 root 下用 sudo）
 as_run_user() {
-    if [ "$(whoami)" = "$RUN_USER" ]; then
+    if [ "$(whoami)" = "$RUN_USER" ] || [ "$RUN_USER" = "root" ]; then
         env "$@"
     else
         sudo -u "$RUN_USER" env "$@"
@@ -77,78 +96,273 @@ export STOPPED_TASKS_FILE="${STOPPED_TASKS_FILE:-/tmp/sm_demo/stopped_tasks.json
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 log()  { echo -e "${CYAN}[INFO]${NC}  $1"; }
 ok()   { echo -e "  ${GREEN}OK${NC}    $1"; }
 fail() { echo -e "  ${RED}FAIL${NC}  $1"; }
+warn() { echo -e "  ${YELLOW}WARN${NC}  $1"; }
+
+# ========== 包管理器检测 ==========
+detect_pkg_mgr() {
+    if command -v apt-get &>/dev/null; then
+        echo "apt"
+    elif command -v yum &>/dev/null; then
+        echo "yum"
+    elif command -v dnf &>/dev/null; then
+        echo "dnf"
+    else
+        echo "unknown"
+    fi
+}
+
+# ========== 自动安装 opencode ==========
+ensure_opencode() {
+    if command -v opencode &>/dev/null; then
+        ok "opencode $(opencode --version 2>/dev/null || echo '?') (已安装)"
+        return 0
+    fi
+
+    warn "opencode 未安装，正在自动安装..."
+
+    # 确保 npm 可用
+    if ! command -v npm &>/dev/null; then
+        local pkg_mgr=$(detect_pkg_mgr)
+        log "  npm 未安装，正在通过 $pkg_mgr 安装 Node.js..."
+        case "$pkg_mgr" in
+            apt)
+                apt-get update -qq && apt-get install -y -qq nodejs npm 2>/tmp/npm_install.log || {
+                    fail "Node.js 安装失败"
+                    cat /tmp/npm_install.log
+                    return 1
+                }
+                ;;
+            yum|dnf)
+                $pkg_mgr install -y nodejs npm 2>/tmp/npm_install.log || {
+                    # CentOS 7 可能需要 EPEL
+                    yum install -y epel-release 2>/dev/null || true
+                    $pkg_mgr install -y nodejs npm 2>/tmp/npm_install.log || {
+                        fail "Node.js 安装失败"
+                        cat /tmp/npm_install.log
+                        return 1
+                    }
+                }
+                ;;
+            *)
+                fail "无法自动安装 Node.js (未知包管理器)"
+                echo "       请手动安装: https://nodejs.org/"
+                return 1
+                ;;
+        esac
+        ok "Node.js $(node -v 2>/dev/null), npm $(npm -v 2>/dev/null)"
+    fi
+
+    # 安装 opencode
+    log "  安装 opencode..."
+    if npm install -g @anthropic/opencode 2>/tmp/opencode_install.log; then
+        ok "opencode 安装成功 ($(opencode --version 2>/dev/null || echo 'ok'))"
+        return 0
+    else
+        fail "opencode 安装失败"
+        cat /tmp/opencode_install.log
+        echo "       请手动安装: npm install -g @anthropic/opencode"
+        return 1
+    fi
+}
+
+# ========== 自动安装 MySQL ==========
+ensure_mysql() {
+    if command -v mysqld &>/dev/null || command -v mariadbd &>/dev/null; then
+        local mysql_ver=$(mysqld --version 2>/dev/null || mariadbd --version 2>/dev/null || echo "installed")
+        ok "MySQL/MariaDB 已安装 ($mysql_ver)"
+    else
+        warn "MySQL 未安装，正在自动安装..."
+        local pkg_mgr=$(detect_pkg_mgr)
+        case "$pkg_mgr" in
+            apt)
+                apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mysql-server mysql-client 2>/tmp/mysql_install.log || {
+                    fail "MySQL 安装失败"
+                    cat /tmp/mysql_install.log
+                    return 1
+                }
+                ;;
+            yum|dnf)
+                $pkg_mgr install -y mysql-server mysql 2>/tmp/mysql_install.log || {
+                    # CentOS 7 可能需要 mariadb
+                    $pkg_mgr install -y mariadb-server mariadb 2>/tmp/mysql_install.log || {
+                        fail "MySQL 安装失败"
+                        cat /tmp/mysql_install.log
+                        return 1
+                    }
+                }
+                ;;
+            *)
+                fail "无法自动安装 MySQL (未知包管理器)"
+                echo "       请手动安装 MySQL 8.0+"
+                return 1
+                ;;
+        esac
+        ok "MySQL 安装完成"
+    fi
+
+    # 确保 MySQL 服务已启动
+    if command -v systemctl &>/dev/null; then
+        if ! systemctl is-active --quiet mysqld 2>/dev/null && ! systemctl is-active --quiet mysql 2>/dev/null && ! systemctl is-active --quiet mariadb 2>/dev/null; then
+            log "  启动 MySQL 服务..."
+            systemctl start mysqld 2>/dev/null || systemctl start mysql 2>/dev/null || systemctl start mariadb 2>/dev/null || {
+                fail "无法启动 MySQL 服务"
+                return 1
+            }
+            systemctl enable mysqld 2>/dev/null || systemctl enable mysql 2>/dev/null || systemctl enable mariadb 2>/dev/null || true
+        fi
+        ok "MySQL 服务已启动"
+    elif command -v service &>/dev/null; then
+        if ! service mysqld status 2>/dev/null | grep -q "running"; then
+            service mysqld start 2>/dev/null || service mysql start 2>/dev/null || service mariadb start 2>/dev/null || true
+        fi
+    fi
+
+    # 确保 mysql 客户端可用
+    if ! command -v mysql &>/dev/null; then
+        fail "mysql 客户端未安装"
+        return 1
+    fi
+    ok "mysql 客户端就绪"
+
+    return 0
+}
+
+# ========== 初始化 MySQL root 密码 ==========
+setup_mysql_auth() {
+    local expected_pass="${MYSQL_ROOT_PASSWORD:-claw123}"
+    log "检查 MySQL root 认证..."
+
+    # 尝试用预期密码连接
+    if mysql -u root -p"$expected_pass" -e "SELECT 1" 2>/dev/null >/dev/null; then
+        ok "MySQL root 密码已配置"
+        return 0
+    fi
+
+    # 尝试无密码连接 (新安装的 MySQL)
+    if mysql -u root -e "SELECT 1" 2>/dev/null >/dev/null; then
+        warn "MySQL root 无密码，正在设置密码..."
+        mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$expected_pass'; FLUSH PRIVILEGES;" 2>/tmp/mysql_auth.log || {
+            fail "MySQL root 密码设置失败"
+            cat /tmp/mysql_auth.log
+            echo "       请手动设置: ALTER USER 'root'@'localhost' IDENTIFIED BY '$expected_pass';"
+            return 1
+        }
+        ok "MySQL root 密码已设置为 '$expected_pass'"
+        return 0
+    fi
+
+    # 尝试用 auth_socket (Ubuntu/Debian 默认)
+    if mysql -u root --socket=/var/run/mysqld/mysqld.sock -e "SELECT 1" 2>/dev/null >/dev/null; then
+        warn "MySQL root 使用 auth_socket 认证，正在改为密码认证..."
+        mysql -u root --socket=/var/run/mysqld/mysqld.sock -e \
+            "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$expected_pass'; FLUSH PRIVILEGES;" 2>/tmp/mysql_auth.log || {
+            fail "MySQL 认证方式修改失败"
+            cat /tmp/mysql_auth.log
+            return 1
+        }
+        ok "MySQL root 已改为密码认证 ($expected_pass)"
+        return 0
+    fi
+
+    fail "MySQL root 认证失败 — 无法自动配置"
+    echo "       请手动设置 root 密码为 '$expected_pass' 或设置环境变量 MYSQL_ROOT_PASSWORD"
+    return 1
+}
 
 # ========== 清理旧进程 ==========
 cleanup_old() {
     log "清理旧进程..."
-    local pk="pkill"
-    # 如果非 root 且 pkill 需要 sudo，则使用 sudo pkill
-    if [ "$(id -u)" -ne 0 ] && ! pkill -0 bash 2>/dev/null; then
-        pk="sudo pkill"
-    fi
     for proc in run_bff.sh skill_registry ai_provider session_manager a1_server c2_dashboard workflow_engine scheduler bff-server; do
-        $pk -f "$proc" 2>/dev/null || true
+        pkill -f "$proc" 2>/dev/null || true
     done
-    $pk -f "next dev" 2>/dev/null || true
-    rm -f /tmp/fe.log 2>/dev/null || sudo rm -f /tmp/fe.log 2>/dev/null || true
+    pkill -f "next dev" 2>/dev/null || true
+    rm -f /tmp/fe.log 2>/dev/null || true
     sleep 2
 }
 
 # ========== 前置检查 ==========
 check_prereq() {
     log "前置检查..."
+
+    # --- TEAM_DEEPSEEK_API_KEY ---
+    # 作用: opencode CLI 调用 DeepSeek API 的认证密钥。
+    # 链路: start_all.sh export → session_manager 读取 → 传递给 opencode 子进程 → opencode 用此 Key 调用 DeepSeek API 生成文本
+    # 不设置则 opencode 无法认证，AI 写稿核心功能完全不可用。
     if [ -z "${TEAM_DEEPSEEK_API_KEY:-}" ]; then
-        fail "TEAM_DEEPSEEK_API_KEY 未设置 — AI写稿将失败"
-        echo "       请设置: export TEAM_DEEPSEEK_API_KEY=sk-xxx"
+        fail "TEAM_DEEPSEEK_API_KEY 未设置"
+        echo "       ┌─────────────────────────────────────────────────────────────┐"
+        echo "       │  作用: opencode AI 写作引擎调用 DeepSeek API 的认证密钥        │"
+        echo "       │  链路: 脚本 → session_manager → opencode → DeepSeek API      │"
+        echo "       │  无此 Key = AI 写稿功能完全不可用                              │"
+        echo "       │                                                             │"
+        echo "       │  获取: https://platform.deepseek.com → API Keys             │"
+        echo "       │  设置: export TEAM_DEEPSEEK_API_KEY=sk-xxxxxxxx              │"
+        echo "       └─────────────────────────────────────────────────────────────┘"
     else
         ok "TEAM_DEEPSEEK_API_KEY 已设置 (长度=${#TEAM_DEEPSEEK_API_KEY})"
     fi
 
-    # Go 版本检查 (需要 >= 1.21)
+    # Go 版本检查
     if ! command -v go &>/dev/null; then
         fail "Go 未安装 — 请安装 Go 1.21+"
         exit 1
     fi
     local go_ver=$(go version 2>/dev/null | grep -oP 'go\K[0-9]+\.[0-9]+' | head -1)
-    if [ -n "$go_ver" ] && [ "$(echo "$go_ver >= 1.21" | bc 2>/dev/null || echo 0)" = "1" ]; then
+    if [ -n "$go_ver" ]; then
         ok "Go $go_ver"
     else
         log "  Go 版本: ${go_ver:-unknown}，建议 >= 1.21"
     fi
 
-    if ! command -v npm &>/dev/null; then
-        fail "npm 未安装 — 请安装 Node.js 18+"
-        exit 1
-    fi
-    ok "npm $(npm -v 2>/dev/null)"
-
-    # opencode CLI（AI 写作核心依赖）
-    if command -v opencode &>/dev/null; then
-        ok "opencode $(opencode --version 2>/dev/null || echo '?')"
+    # Node.js
+    if command -v node &>/dev/null; then
+        ok "Node.js $(node -v 2>/dev/null), npm $(npm -v 2>/dev/null)"
     else
-        fail "opencode 未安装 — AI 写作将不可用"
-        echo "       安装: npm install -g @anthropic/opencode"
-        echo "       或参考: https://opencode.ai/docs/install"
+        fail "Node.js 未安装"
     fi
 
-    if ! command -v mysql &>/dev/null; then
-        fail "mysql 客户端未安装，数据库初始化将跳过"
-    fi
-    if ! command -v python3 &>/dev/null; then
+    # Python3 (封面生成可选)
+    if command -v python3 &>/dev/null; then
+        ok "python3 $(python3 --version 2>/dev/null | awk '{print $2}')"
+    else
         log "  python3 未安装，封面生成将不可用"
     fi
+
+    # --- keys.json ---
+    # 作用: AI Provider (L1_AI_Provider) 的 API Key 钱包，管理多个 DeepSeek Key 实现轮转调用
     if [ ! -f "$AP_DIR/config/keys.json" ]; then
-        fail "L1_AI_Provider/config/keys.json 不存在 — AI Provider 将无法调用 API"
-        echo "       请参考 README.md 配置 API Key"
+        fail "L1_AI_Provider/config/keys.json 不存在"
+        echo "       ┌─────────────────────────────────────────────────────────────┐"
+        echo "       │  作用: AI Provider 的 DeepSeek API Key 钱包                   │"
+        echo "       │  在 L1_AI_Provider/config/ 下创建 keys.json:                  │"
+        echo "       │  { \"deepseek\": [\"sk-xxxxxxxx\", \"sk-yyyyyyyy\"] }          │"
+        echo "       │  支持多 Key 轮转，提高并发和可用性                              │"
+        echo "       └─────────────────────────────────────────────────────────────┘"
+    else
+        ok "keys.json 已配置"
     fi
+
+    # --- L1_novel_skill/config.json ---
+    # 作用: 混元生图 (封面生成) 的腾讯云认证密钥
     if [ ! -f "$SCRIPT_DIR/L1_novel_skill/config.json" ]; then
-        log "提示: L1_novel_skill/config.json 不存在，封面生成将不可用"
-        echo "       如需使用封面生成，请参考 README.md 配置腾讯云密钥"
+        log "  L1_novel_skill/config.json 不存在，封面生成将不可用"
+        echo "       ┌─────────────────────────────────────────────────────────────┐"
+        echo "       │  如需封面生成，请在 L1_novel_skill/ 下创建 config.json:          │"
+        echo "       │  {                                                          │"
+        echo "       │    \"tencent_secret_id\": \"AKIDxxxxxxxx\",                   │"
+        echo "       │    \"tencent_secret_key\": \"xxxxxxxxxxxx\"                   │"
+        echo "       │  }                                                          │"
+        echo "       │  购买: https://buy.cloud.tencent.com/aiart (混元生图极速版)    │"
+        echo "       │  Key 获取: https://console.cloud.tencent.com/cam/capi       │"
+        echo "       └─────────────────────────────────────────────────────────────┘"
+    else
+        ok "L1_novel_skill/config.json 已配置"
     fi
 }
 
@@ -157,8 +371,8 @@ setup_data() {
     log "准备沙箱配置..."
     mkdir -p "$DATA_DIR"
     mkdir -p "$LOG_DIR"
-    chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || sudo chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || true
-    chown -R "$RUN_USER:$RUN_USER" "$LOG_DIR" 2>/dev/null || sudo chown -R "$RUN_USER:$RUN_USER" "$LOG_DIR" 2>/dev/null || true
+    chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || true
+    chown -R "$RUN_USER:$RUN_USER" "$LOG_DIR" 2>/dev/null || true
 
     if [ ! -f "$DATA_DIR/opencode_config.json" ]; then
         cat > "$DATA_DIR/opencode_config.json" << 'CONFEOF'
@@ -172,7 +386,7 @@ CONFEOF
 init_database() {
     log "初始化数据库..."
     if ! command -v mysql &>/dev/null; then
-        log "  mysql 未安装，跳过数据库初始化"
+        log "  mysql 客户端未安装，跳过数据库初始化"
         return
     fi
 
@@ -316,7 +530,7 @@ start_ai_provider() {
 start_session_manager() {
     log "启动 Session Manager (:18080)..."
     cd "$SM_DIR"
-    chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || sudo chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || true
+    chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || true
     as_run_user setsid ./session_manager --port 18080 --data-dir "$DATA_DIR" --max-concurrent 2 --stale-timeout-min 60 --skill-registry http://localhost:18090 > /tmp/sm.log 2>&1 &
     sleep 3
     if curl -s --max-time 3 http://127.0.0.1:18080/api/status > /dev/null 2>&1; then
@@ -472,7 +686,15 @@ main() {
     echo ""
     echo -e "${CYAN}========================================${NC}"
     echo -e "${CYAN}  全模块后端 + 前端服务启动脚本${NC}"
+    echo -e "${CYAN}    运行用户: $RUN_USER${NC}"
     echo -e "${CYAN}========================================${NC}"
+    echo ""
+
+    # 环境安装
+    log "=== 环境检测与安装 ==="
+    ensure_mysql
+    setup_mysql_auth
+    ensure_opencode
     echo ""
 
     cleanup_old
