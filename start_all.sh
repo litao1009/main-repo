@@ -58,11 +58,14 @@ if [ -z "$RUN_USER" ]; then
 fi
 
 # 以指定用户身份执行命令（root 下直接切用户，非 root 下用 sudo）
+# -E 保留环境变量，确保 TEAM_DEEPSEEK_API_KEY 等能传递到子进程
 as_run_user() {
     if [ "$(whoami)" = "$RUN_USER" ] || [ "$RUN_USER" = "root" ]; then
         env "$@"
+    elif [ "$RUN_USER" != "root" ]; then
+        sudo -E -u "$RUN_USER" env "$@"
     else
-        sudo -u "$RUN_USER" env "$@"
+        env "$@"
     fi
 }
 
@@ -291,18 +294,22 @@ check_prereq() {
     log "前置检查..."
 
     # --- TEAM_DEEPSEEK_API_KEY ---
+    # 注意: 这个环境变量名称是 opencode CLI 和 session_manager 代码中硬编码的，
+    # 不是由当前机器环境决定的。任何机器上都必须使用这个名称。
     # 作用: opencode CLI 调用 DeepSeek API 的认证密钥。
-    # 链路: start_all.sh export → session_manager 读取 → 传递给 opencode 子进程 → opencode 用此 Key 调用 DeepSeek API 生成文本
+    # 链路: start_all.sh export → sudo -E 传递 → session_manager --deepseek-api-key → opencode 子进程 → DeepSeek API
     # 不设置则 opencode 无法认证，AI 写稿核心功能完全不可用。
     if [ -z "${TEAM_DEEPSEEK_API_KEY:-}" ]; then
         fail "TEAM_DEEPSEEK_API_KEY 未设置"
         echo "       ┌─────────────────────────────────────────────────────────────┐"
-        echo "       │  作用: opencode AI 写作引擎调用 DeepSeek API 的认证密钥        │"
-        echo "       │  链路: 脚本 → session_manager → opencode → DeepSeek API      │"
+        echo "       │  变量名: TEAM_DEEPSEEK_API_KEY (写死在 opencode/session_mgr 代码中)  │"
+        echo "       │  作用:   opencode AI 写作引擎调用 DeepSeek API 的认证密钥        │"
+        echo "       │  链路:   脚本 → sudo -E → session_manager → opencode → DeepSeek│"
         echo "       │  无此 Key = AI 写稿功能完全不可用                              │"
         echo "       │                                                             │"
         echo "       │  获取: https://platform.deepseek.com → API Keys             │"
         echo "       │  设置: export TEAM_DEEPSEEK_API_KEY=sk-xxxxxxxx              │"
+        echo "       │        (必须是这个变量名，不能改)                              │"
         echo "       └─────────────────────────────────────────────────────────────┘"
     else
         ok "TEAM_DEEPSEEK_API_KEY 已设置 (长度=${#TEAM_DEEPSEEK_API_KEY})"
@@ -531,7 +538,14 @@ start_session_manager() {
     log "启动 Session Manager (:18080)..."
     cd "$SM_DIR"
     chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || true
-    as_run_user setsid ./session_manager --port 18080 --data-dir "$DATA_DIR" --max-concurrent 2 --stale-timeout-min 60 --skill-registry http://localhost:18090 > /tmp/sm.log 2>&1 &
+    as_run_user setsid ./session_manager \
+        --port 18080 \
+        --data-dir "$DATA_DIR" \
+        --max-concurrent 2 \
+        --stale-timeout-min 60 \
+        --skill-registry http://localhost:18090 \
+        --deepseek-api-key "${TEAM_DEEPSEEK_API_KEY:-}" \
+        > /tmp/sm.log 2>&1 &
     sleep 3
     if curl -s --max-time 3 http://127.0.0.1:18080/api/status > /dev/null 2>&1; then
         ok "Session Manager :18080"
