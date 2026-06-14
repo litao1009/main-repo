@@ -23,6 +23,30 @@ MIGRATIONS_DIR="$SCRIPT_DIR/migrations"
 DATA_DIR="/tmp/sm_demo"
 LOG_DIR="/tmp/logs"
 
+# ========== 运行时用户检测 ==========
+# 优先使用当前用户；如果当前用户是 root，则尝试使用 admin
+RUN_USER="${RUN_USER:-}"
+if [ -z "$RUN_USER" ]; then
+    if [ "$(id -u)" -eq 0 ]; then
+        if id admin &>/dev/null; then
+            RUN_USER="admin"
+        else
+            RUN_USER="$(whoami)"
+        fi
+    else
+        RUN_USER="$(whoami)"
+    fi
+fi
+
+# sudo 包装函数（无需 sudo 时直接执行）
+as_run_user() {
+    if [ "$(whoami)" = "$RUN_USER" ]; then
+        env "$@"
+    else
+        sudo -u "$RUN_USER" env "$@"
+    fi
+}
+
 # ========== 环境变量（可覆盖） ==========
 export A1_DB_DSN="${A1_DB_DSN:-xlongxia:Xlongxia_123@tcp(127.0.0.1:3306)/xlongxia?parseTime=true}"
 export C2_DB_DSN="${C2_DB_DSN:-$A1_DB_DSN}"
@@ -62,17 +86,16 @@ fail() { echo -e "  ${RED}FAIL${NC}  $1"; }
 # ========== 清理旧进程 ==========
 cleanup_old() {
     log "清理旧进程..."
-    sudo pkill -f run_bff.sh      2>/dev/null || true
-    sudo pkill -f skill_registry   2>/dev/null || true
-    sudo pkill -f ai_provider      2>/dev/null || true
-    sudo pkill -f session_manager  2>/dev/null || true
-    sudo pkill -f a1_server        2>/dev/null || true
-    sudo pkill -f c2_dashboard     2>/dev/null || true
-    sudo pkill -f workflow_engine  2>/dev/null || true
-    sudo pkill -f scheduler        2>/dev/null || true
-    sudo pkill -f bff-server       2>/dev/null || true
-    sudo pkill -f "next dev"       2>/dev/null || true
-    sudo rm -f /tmp/fe.log 2>/dev/null || true
+    local pk="pkill"
+    # 如果非 root 且 pkill 需要 sudo，则使用 sudo pkill
+    if [ "$(id -u)" -ne 0 ] && ! pkill -0 bash 2>/dev/null; then
+        pk="sudo pkill"
+    fi
+    for proc in run_bff.sh skill_registry ai_provider session_manager a1_server c2_dashboard workflow_engine scheduler bff-server; do
+        $pk -f "$proc" 2>/dev/null || true
+    done
+    $pk -f "next dev" 2>/dev/null || true
+    rm -f /tmp/fe.log 2>/dev/null || sudo rm -f /tmp/fe.log 2>/dev/null || true
     sleep 2
 }
 
@@ -85,16 +108,39 @@ check_prereq() {
     else
         ok "TEAM_DEEPSEEK_API_KEY 已设置 (长度=${#TEAM_DEEPSEEK_API_KEY})"
     fi
+
+    # Go 版本检查 (需要 >= 1.21)
     if ! command -v go &>/dev/null; then
-        fail "Go 未安装"
+        fail "Go 未安装 — 请安装 Go 1.21+"
         exit 1
     fi
+    local go_ver=$(go version 2>/dev/null | grep -oP 'go\K[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$go_ver" ] && [ "$(echo "$go_ver >= 1.21" | bc 2>/dev/null || echo 0)" = "1" ]; then
+        ok "Go $go_ver"
+    else
+        log "  Go 版本: ${go_ver:-unknown}，建议 >= 1.21"
+    fi
+
     if ! command -v npm &>/dev/null; then
-        fail "npm 未安装"
+        fail "npm 未安装 — 请安装 Node.js 18+"
         exit 1
     fi
+    ok "npm $(npm -v 2>/dev/null)"
+
+    # opencode CLI（AI 写作核心依赖）
+    if command -v opencode &>/dev/null; then
+        ok "opencode $(opencode --version 2>/dev/null || echo '?')"
+    else
+        fail "opencode 未安装 — AI 写作将不可用"
+        echo "       安装: npm install -g @anthropic/opencode"
+        echo "       或参考: https://opencode.ai/docs/install"
+    fi
+
     if ! command -v mysql &>/dev/null; then
         fail "mysql 客户端未安装，数据库初始化将跳过"
+    fi
+    if ! command -v python3 &>/dev/null; then
+        log "  python3 未安装，封面生成将不可用"
     fi
     if [ ! -f "$AP_DIR/config/keys.json" ]; then
         fail "L1_AI_Provider/config/keys.json 不存在 — AI Provider 将无法调用 API"
@@ -111,8 +157,8 @@ setup_data() {
     log "准备沙箱配置..."
     mkdir -p "$DATA_DIR"
     mkdir -p "$LOG_DIR"
-    sudo chown -R admin:admin "$DATA_DIR" 2>/dev/null || true
-    sudo chown -R admin:admin "$LOG_DIR" 2>/dev/null || true
+    chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || sudo chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || true
+    chown -R "$RUN_USER:$RUN_USER" "$LOG_DIR" 2>/dev/null || sudo chown -R "$RUN_USER:$RUN_USER" "$LOG_DIR" 2>/dev/null || true
 
     if [ ! -f "$DATA_DIR/opencode_config.json" ]; then
         cat > "$DATA_DIR/opencode_config.json" << 'CONFEOF'
@@ -130,15 +176,20 @@ init_database() {
         return
     fi
 
-    local db_user="root"
-    local db_pass="claw123"
-    local db_host="127.0.0.1"
-    local db_port="3306"
+    local db_user="${MYSQL_ROOT_USER:-root}"
+    local db_pass="${MYSQL_ROOT_PASSWORD:-claw123}"
+    local db_host="${MYSQL_HOST:-127.0.0.1}"
+    local db_port="${MYSQL_PORT:-3306}"
+
+    local mysql_cmd="mysql -h$db_host -P$db_port -u$db_user"
+    if [ -n "$db_pass" ]; then
+        mysql_cmd="$mysql_cmd -p$db_pass"
+    fi
 
     # 执行 xlongxia schema
     local xlongxia_sql="$SCRIPT_DIR/schema_xlongxia.sql"
     if [ -f "$xlongxia_sql" ]; then
-        if mysql -h"$db_host" -P"$db_port" -u"$db_user" -p"$db_pass" < "$xlongxia_sql" 2>/tmp/db_err.log; then
+        if $mysql_cmd < "$xlongxia_sql" 2>/tmp/db_err.log; then
             ok "xlongxia 数据库已初始化"
         else
             if grep -qi "already exists\|Access denied" /tmp/db_err.log 2>/dev/null; then
@@ -153,7 +204,7 @@ init_database() {
     # 执行 claw_studios schema
     local clawstudios_sql="$SCRIPT_DIR/schema_claw_studios.sql"
     if [ -f "$clawstudios_sql" ]; then
-        if mysql -h"$db_host" -P"$db_port" -u"$db_user" -p"$db_pass" < "$clawstudios_sql" 2>/tmp/db_err.log; then
+        if $mysql_cmd < "$clawstudios_sql" 2>/tmp/db_err.log; then
             ok "claw_studios 数据库已初始化"
         else
             if grep -qi "already exists\|Access denied" /tmp/db_err.log 2>/dev/null; then
@@ -169,7 +220,7 @@ init_database() {
     if [ -d "$MIGRATIONS_DIR" ]; then
         for f in $(ls "$MIGRATIONS_DIR"/*.sql 2>/dev/null | sort); do
             local fname=$(basename "$f")
-            if mysql -h"$db_host" -P"$db_port" -u"$db_user" -p"$db_pass" < "$f" 2>/tmp/migrate_err.log; then
+            if $mysql_cmd < "$f" 2>/tmp/migrate_err.log; then
                 ok "migration: $fname"
             else
                 if grep -qi "duplicate column\|already exists\|duplicate key\|Duplicate entry" /tmp/migrate_err.log 2>/dev/null; then
@@ -265,8 +316,8 @@ start_ai_provider() {
 start_session_manager() {
     log "启动 Session Manager (:18080)..."
     cd "$SM_DIR"
-    sudo chown -R admin:admin "$DATA_DIR" 2>/dev/null || true
-    sudo -u admin setsid ./session_manager --port 18080 --data-dir "$DATA_DIR" --max-concurrent 2 --stale-timeout-min 60 --skill-registry http://localhost:18090 > /tmp/sm.log 2>&1 &
+    chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || sudo chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || true
+    as_run_user setsid ./session_manager --port 18080 --data-dir "$DATA_DIR" --max-concurrent 2 --stale-timeout-min 60 --skill-registry http://localhost:18090 > /tmp/sm.log 2>&1 &
     sleep 3
     if curl -s --max-time 3 http://127.0.0.1:18080/api/status > /dev/null 2>&1; then
         ok "Session Manager :18080"
@@ -282,7 +333,7 @@ start_session_manager() {
 start_a1_vault() {
     log "启动 A1 Account Vault (:8084)..."
     cd "$A1_DIR"
-    sudo -u admin env \
+    as_run_user \
       A1_DB_DSN="$A1_DB_DSN" \
       A1_ENCRYPTION_KEY="$A1_ENCRYPTION_KEY" \
       A1_MOCK_ENCRYPTION_KEY="$A1_MOCK_ENCRYPTION_KEY" \
@@ -303,7 +354,7 @@ start_a1_vault() {
 start_workflow_engine() {
     log "启动 Workflow Engine (:9100)..."
     cd "$WF_DIR"
-    sudo -u admin setsid ./workflow_engine > /tmp/wf.log 2>&1 &
+    as_run_user setsid ./workflow_engine > /tmp/wf.log 2>&1 &
     sleep 3
     if curl -s --max-time 3 http://127.0.0.1:9100/health > /dev/null 2>&1; then
         ok "Workflow Engine :9100"
@@ -319,7 +370,7 @@ start_workflow_engine() {
 start_dashboard() {
     log "启动 Dashboard (:8083)..."
     cd "$DB_DIR"
-    sudo -u admin setsid ./c2_dashboard > /tmp/c2.log 2>&1 &
+    as_run_user setsid ./c2_dashboard > /tmp/c2.log 2>&1 &
     sleep 3
     if curl -s --max-time 3 http://127.0.0.1:8083/health > /dev/null 2>&1; then
         ok "Dashboard :8083"

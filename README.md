@@ -10,9 +10,16 @@
 |------|---------|------|
 | Go | 1.21+ | 编译 8 个 Go 后端服务 |
 | Node.js + npm | 18+ | 编译 Next.js 前端 |
+| opencode CLI | 最新版 | AI 写作引擎，核心依赖 |
 | MySQL | 8.0+ | 数据库，需本地运行在 `127.0.0.1:3306` |
 | Python 3 | 3.6+ | 封面生成脚本（可选） |
-| sudo | - | 进程管理所需 |
+| pillow (PIL) | - | Python 图片处理库（可选） |
+
+**opencode 安装**：
+```bash
+npm install -g @anthropic/opencode
+# 或参考: https://opencode.ai/docs/install
+```
 
 ### 2. 必须配置（缺一不可）
 
@@ -95,6 +102,69 @@ API 统一入口: http://localhost:8088
 
 ---
 
+## 常见问题
+
+### MySQL root 密码不是 claw123
+
+设置环境变量后启动：
+```bash
+export MYSQL_ROOT_PASSWORD=你的密码
+bash start_all.sh
+```
+
+如果 xlongxia 和 claw_studios 数据库的密码也不同，还需要设置：
+```bash
+export A1_DB_DSN="xlongxia:你的密码@tcp(127.0.0.1:3306)/xlongxia?parseTime=true"
+export DB_DSN="root:你的密码@tcp(127.0.0.1:3306)/claw_studios?parseTime=true&charset=utf8mb4"
+```
+
+### opencode 未安装
+
+```bash
+npm install -g @anthropic/opencode
+# 验证:
+opencode --version
+```
+
+### Go 版本过低
+
+需要 Go 1.21+。某些模块需要 1.24+。建议使用最新 Go：
+```bash
+# 通过 gvm 管理版本
+bash < <(curl -s -S -L https://raw.githubusercontent.com/moovweb/gvm/master/binscripts/gvm-installer)
+gvm install go1.24
+gvm use go1.24
+```
+
+### 端口被占用
+
+启动前脚本会自动 pkill 旧进程。如果仍被占用，手动清理：
+```bash
+lsof -i :8088 -i :8083 -i :8084 -i :9100 -i :9104 -i :18080 -i :18090 -i :18180 -i :3000
+```
+
+### `sudo: a password is required`
+
+如果当前用户不在 sudoers 中，可以通过环境变量强制以当前用户运行：
+```bash
+export RUN_USER=$(whoami)
+bash start_all.sh
+```
+
+### 远程访问前端
+
+编辑 `Front_design/.env.local`，将 `localhost` 改为服务器 IP：
+```
+NEXT_PUBLIC_API_BASE=http://你的服务器IP:8088
+NEXT_PUBLIC_WS_BASE=ws://你的服务器IP:8088
+```
+
+### pip install Pillow
+
+```bash
+pip3 install Pillow
+```
+
 ## 目录结构与用途
 
 | 目录 | 用途 | 备注 |
@@ -133,10 +203,15 @@ API 统一入口: http://localhost:8088
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `TEAM_DEEPSEEK_API_KEY` | (空) | DeepSeek API Key，**必须设置** |
+| `RUN_USER` | (当前用户) | 运行服务的系统用户，默认自动检测 |
 | `A1_DB_DSN` | `xlongxia:Xlongxia_123@tcp(127.0.0.1:3306)/xlongxia?parseTime=true` | xlongxia 数据库连接串 |
 | `A1_ENCRYPTION_KEY` | (内置) | 凭证加密密钥，生产环境请更换 |
 | `A1_JWT_SECRET` | `not-default-secret-change-me` | JWT 签名密钥，**生产环境必须更换** |
 | `DB_DSN` | `root:claw123@tcp(127.0.0.1:3306)/claw_studios?...` | claw_studios 数据库连接串 |
+| `MYSQL_ROOT_USER` | `root` | MySQL root 用户名（建库用） |
+| `MYSQL_ROOT_PASSWORD` | `claw123` | MySQL root 密码（建库用） |
+| `MYSQL_HOST` | `127.0.0.1` | MySQL 主机地址 |
+| `MYSQL_PORT` | `3306` | MySQL 端口 |
 | `PORT` | `8088` | BFF 网关端口 |
 
 完整环境变量列表见 `start_all.sh` 脚本头部。
