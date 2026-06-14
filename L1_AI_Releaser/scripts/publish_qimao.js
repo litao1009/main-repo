@@ -482,7 +482,13 @@ async function doSetBookInfo(cookieStr, input) {
             if (!u) throw new Error('upload missing files[0].path in response: ' + JSON.stringify(data));
 
             const arrBuf = await jpegBlob.arrayBuffer();
-            const jpegBase64 = btoa(String.fromCharCode(...new Uint8Array(arrBuf)));
+            const arr = new Uint8Array(arrBuf);
+            const chunks = [];
+            const CHUNK = 8192;
+            for (let i = 0; i < arr.length; i += CHUNK) {
+                chunks.push(String.fromCharCode(...arr.subarray(i, i + CHUNK)));
+            }
+            const jpegBase64 = btoa(chunks.join(''));
             return { coverURL: u, jpegBase64: jpegBase64 };
         }, coverBase64);
         const coverURL = uploadResult.coverURL;
@@ -501,7 +507,7 @@ async function doSetBookInfo(cookieStr, input) {
             book_desc: bookDesc || '',
             book_id: bookId,
             book_status: '0',
-            book_updated_at: '',
+            book_updated_at: Math.floor(Date.now() / 1000),
             category_1: String(category1 || ''),
             category_2: String(category2 || ''),
             characters: characters || '',
