@@ -31,6 +31,13 @@ const skillLabel = (s: string) => ({
   novel_continuation_ai: "小说续写", "my-novel-writer": "小说写手",
 }[s] || s)
 
+const UNSET_LAST_ACTIVE_AT = "0001-01-01T00:00:00Z"
+
+function formatTaskUpdatedLabel(lastActiveAt?: string): string | null {
+  if (!lastActiveAt || lastActiveAt === UNSET_LAST_ACTIVE_AT) return null
+  return `更新于 ${formatRelativeTime(lastActiveAt)}`
+}
+
 function getTaskCardSubtitle(task: TaskSummary): { text: string; isError: boolean } {
   const err = task.auto_publish_error_message?.trim()
   if (err) return { text: err, isError: true }
@@ -155,6 +162,7 @@ export default function TaskListPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
             {tasks.map(task => {
               const subtitle = getTaskCardSubtitle(task)
+              const updatedLabel = formatTaskUpdatedLabel(task.last_active_at)
               return (
               <Link
                 key={task.task_id}
@@ -246,7 +254,9 @@ export default function TaskListPage() {
                       )}
                     </div>
                     <div className="flex items-center justify-between text-[11px] text-slate-400 mt-1">
-                      <span>更新于 {formatRelativeTime(task.last_active_at || task.created_at)}</span>
+                      <span className="inline-block min-h-[1em]" aria-hidden={!updatedLabel}>
+                        {updatedLabel ?? "\u00a0"}
+                      </span>
                       <span>创建于 {formatRelativeTime(task.created_at)}</span>
                     </div>
                   </div>

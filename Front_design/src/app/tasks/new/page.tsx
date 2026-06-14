@@ -19,8 +19,8 @@ function getEmptySelection(): SelectedTags { return { main: [], theme: [], role:
 
 const PLATFORM_OPTS = [
   { value: "fanqie",  label: "番茄小说", bg: "bg-red-50",   text: "text-red-500",  char: "番" },
-  { value: "qimao",   label: "七猫",     bg: "bg-amber-50", text: "text-amber-600", char: "七", devOnly: true },
-  { value: "zhulang", label: "逐浪网",   bg: "bg-blue-50",  text: "text-blue-500", char: "逐", devOnly: true },
+  { value: "qimao",   label: "七猫",     bg: "bg-amber-50", text: "text-amber-600", char: "七" },
+  { value: "zhulang", label: "逐浪网",   bg: "bg-blue-50",  text: "text-blue-500", char: "逐" },
 ]
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || ""
@@ -357,10 +357,6 @@ export default function NewTaskPage() {
                   key={opt.value} type="button"
                   onClick={() => {
                     if (opt.value === platform) return
-                    if (opt.devOnly) {
-                      toast.error(`${opt.label}平台正在开发中，敬请期待`)
-                      return
-                    }
                     setSelectedAccountId("")
                     setSelectedSkillId("")
                     setAccounts([])

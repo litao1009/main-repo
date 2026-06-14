@@ -2,38 +2,20 @@
 
 import { useEffect, useState, useRef } from "react"
 import { usePathname, useRouter } from "next/navigation"
-import { isAuthenticated, getToken, clearAuth } from "@/lib/auth"
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || ""
-
-async function verifyToken(): Promise<boolean> {
-  const token = getToken()
-  if (!token) return false
-  try {
-    const resp = await fetch(`${API_BASE}/api/auth/me`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    if (!resp.ok) {
-      clearAuth()
-      return false
-    }
-    return true
-  } catch {
-    clearAuth()
-    return false
-  }
-}
+import { isAuthenticated, verifySession } from "@/lib/auth"
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const [ready, setReady] = useState(false)
   const redirectingRef = useRef(false)
+  const sessionCheckedRef = useRef(false)
 
   useEffect(() => {
     if (pathname === "/login") {
+      sessionCheckedRef.current = false
       if (isAuthenticated()) {
-        verifyToken().then((valid) => {
+        verifySession().then((valid) => {
           if (valid) {
             if (!redirectingRef.current) {
               redirectingRef.current = true
@@ -57,14 +39,18 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
       return
     }
 
-    verifyToken().then((valid) => {
+    if (sessionCheckedRef.current) {
+      setReady(true)
+      return
+    }
+
+    verifySession().then((valid) => {
       if (valid) {
+        sessionCheckedRef.current = true
         setReady(true)
-      } else {
-        if (!redirectingRef.current) {
-          redirectingRef.current = true
-          router.replace("/login")
-        }
+      } else if (!redirectingRef.current) {
+        redirectingRef.current = true
+        router.replace("/login")
       }
     })
   }, [pathname, router])

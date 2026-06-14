@@ -13,9 +13,14 @@ export interface AuthUser {
 }
 
 let memoryUser: AuthUser | null = null
+let sessionVerified = false
+let meInflight: Promise<AuthUser | null> | null = null
+
+type AuthProfile = Pick<AuthUser, "uid" | "username" | "role" | "phone">
 
 export function setAuthUser(user: AuthUser) {
   memoryUser = user
+  sessionVerified = true
   try {
     localStorage.setItem(JWT_KEY, user.token)
     localStorage.setItem(USER_KEY, JSON.stringify({
@@ -60,10 +65,61 @@ export function isAdmin(): boolean {
 
 export function clearAuth() {
   memoryUser = null
+  sessionVerified = false
+  meInflight = null
   try {
     localStorage.removeItem(JWT_KEY)
     localStorage.removeItem(USER_KEY)
   } catch { /* ignore */ }
+}
+
+function profileFromMemory(): AuthProfile | null {
+  const current = getAuthUser()
+  if (!current) return null
+  return {
+    uid: current.uid,
+    username: current.username,
+    role: current.role,
+    phone: current.phone,
+  }
+}
+
+async function requestAuthMe(): Promise<AuthUser | null> {
+  const token = getToken()
+  if (!token) return null
+  try {
+    const resp = await fetch(`${API_BASE}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!resp.ok) {
+      clearAuth()
+      return null
+    }
+    const data = await resp.json()
+    const profile = data.data || data
+    if (!profile?.uid) {
+      clearAuth()
+      return null
+    }
+
+    const current = getAuthUser()
+    const nextUser: AuthUser = {
+      uid: profile.uid,
+      username: profile.username,
+      role: profile.role,
+      token,
+      phone: profile.phone ? String(profile.phone) : undefined,
+    }
+    if (current) {
+      setAuthUser({ ...current, ...nextUser, token: current.token })
+    } else {
+      setAuthUser(nextUser)
+    }
+    return getAuthUser()
+  } catch {
+    clearAuth()
+    return null
+  }
 }
 
 export async function login(account: string, password: string): Promise<AuthUser> {
@@ -98,32 +154,26 @@ export function logout() {
   }
 }
 
-export async function fetchCurrentUser(): Promise<{ uid: string; username: string; role: string; phone?: string } | null> {
-  const token = getToken()
-  if (!token) return null
-  try {
-    const resp = await fetch(`${API_BASE}/api/auth/me`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    if (!resp.ok) return null
-    const data = await resp.json()
-    const profile = data.data || data
-    if (!profile?.uid) return null
+/** 校验会话；同一会话内多次调用共享结果，不会重复请求 /api/auth/me */
+export async function verifySession(): Promise<boolean> {
+  const user = await fetchCurrentUser()
+  return user !== null
+}
 
-    const current = getAuthUser()
-    if (current) {
-      setAuthUser({
-        ...current,
-        uid: profile.uid,
-        username: profile.username,
-        role: profile.role,
-        phone: profile.phone ? String(profile.phone) : undefined,
-      })
-    }
-    return profile
-  } catch {
-    return null
+export async function fetchCurrentUser(): Promise<AuthProfile | null> {
+  if (sessionVerified) {
+    return profileFromMemory()
   }
+  if (meInflight) {
+    const user = await meInflight
+    return user ? profileFromMemory() : null
+  }
+
+  meInflight = requestAuthMe().finally(() => {
+    meInflight = null
+  })
+  const user = await meInflight
+  return user ? profileFromMemory() : null
 }
 
 export function userRoleLabel(role: "admin" | "user") {

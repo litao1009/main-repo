@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
-import { getAuthUser, logout, isAdmin, fetchCurrentUser, userSubline } from "@/lib/auth"
+import { getAuthUser, logout, isAdmin, userSubline } from "@/lib/auth"
 import { LogOut, AlertTriangle } from "lucide-react"
 import { useEffect, useState } from "react"
 import {
@@ -21,7 +21,6 @@ export function Sidebar() {
   useEffect(() => {
     setMounted(true)
     setUser(getAuthUser())
-    fetchCurrentUser().then(() => setUser(getAuthUser()))
   }, [])
 
   const isActive = (href: string) => {
