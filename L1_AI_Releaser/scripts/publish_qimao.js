@@ -445,7 +445,7 @@ async function doSetBookInfo(cookieStr, input) {
         await loginAndNavigate(page, cookieStr);
 
         log('info', 'uploading cover image');
-        const coverURL = await page.evaluate(async (cb64) => {
+        const uploadResult = await page.evaluate(async (cb64) => {
             const bstr = atob(cb64);
             const bytes = new Uint8Array(bstr.length);
             for (let i = 0; i < bstr.length; i++) bytes[i] = bstr.charCodeAt(i);
@@ -480,9 +480,21 @@ async function doSetBookInfo(cookieStr, input) {
             const data = await resp.json();
             const u = (data && data.data && data.data.files && data.data.files[0] && data.data.files[0].path) || '';
             if (!u) throw new Error('upload missing files[0].path in response: ' + JSON.stringify(data));
-            return u;
+
+            const arrBuf = await jpegBlob.arrayBuffer();
+            const jpegBase64 = btoa(String.fromCharCode(...new Uint8Array(arrBuf)));
+            return { coverURL: u, jpegBase64: jpegBase64 };
         }, coverBase64);
+        const coverURL = uploadResult.coverURL;
         log('info', 'cover uploaded', { path: coverURL });
+
+        try {
+            const jpegBuf = Buffer.from(uploadResult.jpegBase64, 'base64');
+            fs.writeFileSync('/tmp/logs/qimao_cover_jpeg_' + input.bookId + '.jpeg', jpegBuf);
+            log('info', 'saved jpeg cover to disk', { bookId: input.bookId, size: jpegBuf.length });
+        } catch (e) {
+            log('warn', 'failed to save jpeg cover', { error: e.message });
+        }
 
         const params = {
             book_activity_id: '0',
@@ -510,7 +522,7 @@ async function doSetBookInfo(cookieStr, input) {
         const url = CONFIG.BASE_URL + '/api/pc/v1/book/save-book-info';
         const body = buildFormBody(params);
         const result = await browserFetch(page, url, { method: 'POST', body });
-        log('info', 'set_book_info save-book-info response', { status: result.status, hasData: !!(result.json && result.json.data) });
+        log('info', 'set_book_info save-book-info response', { status: result.status, text: result.text });
 
         if (!result.json || !result.json.data) {
             return { success: false, action: 'set_book_info', error: 'save-book-info returned no data' };

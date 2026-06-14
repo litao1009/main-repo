@@ -1,6 +1,8 @@
 -- 001_user_system.sql
 -- 用户系统基础 migration：角色、Token 失效、管理员审计
 
+USE xlongxia;
+
 ALTER TABLE a1_users
   ADD COLUMN role VARCHAR(16) NOT NULL DEFAULT 'user'
   AFTER password;

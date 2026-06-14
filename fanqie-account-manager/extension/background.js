@@ -1,5 +1,5 @@
-// background.js — 账号管家 Service Worker
-// 支持平台：fanqie（番茄小说）、zhulang（逐浪网）
+// background.js — 铸文坊账号管家 Service Worker
+// 支持平台：fanqie（番茄小说）、qimao（七猫）、zhulang（逐浪网）
 // 负责：清除旧登录态 → 新建窗口打开登录页 → 监听 URL 跳转 → 抓取 Cookie → 获取用户名 → 结果回传前端
 
 // ─────────────────────────────────────────────
@@ -32,6 +32,27 @@ const PLATFORM_CONFIG = {
     isSiteDomain: (url) => url.includes('fanqienovel.com'),
     loginPendingMessage: '请在打开的番茄小说页面完成手机验证码登录...',
   },
+  qimao: {
+    domains: [
+      '.qimao.com',
+      'qimao.com',
+      'zuozhe.qimao.com',
+    ],
+    clearOrigins: [
+      'https://zuozhe.qimao.com',
+      'https://qimao.com',
+      'https://www.qimao.com',
+    ],
+    loginUrl: 'https://zuozhe.qimao.com/front/register-login/login',
+    writerUrl: 'https://zuozhe.qimao.com/front/index',
+    profileUrl: 'https://zuozhe.qimao.com/api/author/profile',
+    injectDomain: '.qimao.com',
+    injectUrl: 'https://zuozhe.qimao.com',
+    isSiteDomain: (url) => url.includes('qimao.com'),
+    isLoginPage: (url) => /register-login/i.test(url),
+    isLoggedInUrl: (url) => /zuozhe\.qimao\.com\/front\/index\b/i.test(url),
+    loginPendingMessage: '请在打开的七猫作家页面完成登录...',
+  },
   zhulang: {
     domains: [
       '.zhulang.com',
@@ -44,7 +65,7 @@ const PLATFORM_CONFIG = {
       'https://writer.zhulang.com',
     ],
     loginUrl: 'https://www.zhulang.com/login/index.html',
-    writerUrl: 'https://writer.zhulang.com/book/index.html',
+    writerUrl: 'https://writer.zhulang.com/author/index.html',
     injectDomain: '.zhulang.com',
     injectUrl: 'https://www.zhulang.com',
     isSiteDomain: (url) => url.includes('zhulang.com'),
@@ -55,10 +76,15 @@ const PLATFORM_CONFIG = {
 // 登录成功后页面会离开 /login 路径
 const LOGIN_PAGE_PATTERN = /\/login/i;
 
+// 番茄：等待用户开通作者身份（轮询 account/info）
+const AUTHOR_POLL_INTERVAL_MS = 5000;
+const AUTHOR_WAIT_TIMEOUT_MS = 15 * 60 * 1000;
+
 // 运行时状态（Service Worker 存活期内有效）
 let state = {
   active: false,
   platform: 'fanqie',
+  captureMode: 'bind',
   managementTabId: null,
   targetTabId: null,
   targetWinId: null,
@@ -66,16 +92,21 @@ let state = {
 let cookieListener = null;
 let timeoutHandle = null;
 let pollHandle = null;
+let authorPollHandle = null;
+let authorWaitStartedAt = 0;
 
 // ─────────────────────────────────────────────
 // 消息入口
 // ─────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'FANQIE_CAPTURE_START') {
-    handleStartCapture(sender.tab.id, msg.platform || 'fanqie');
+    handleStartCapture(sender.tab.id, msg.platform || 'fanqie', msg.mode || 'bind');
     sendResponse({ ok: true });
   } else if (msg.type === 'FANQIE_MANUAL_CAPTURE') {
-    if (state.active) captureCookiesAndFinish();
+    if (state.active) pollAuthorOnceAndMaybeFinish(true);
+    sendResponse({ ok: true });
+  } else if (msg.type === 'FANQIE_CAPTURE_CANCEL') {
+    if (state.active) doCancel('已取消绑定流程');
     sendResponse({ ok: true });
   } else if (msg.type === 'FANQIE_INJECT_COOKIES') {
     handleInjectCookies(msg.cookieStr, msg.platform || 'fanqie', sender.tab.id);
@@ -87,7 +118,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // ─────────────────────────────────────────────
 // Step 1：开始抓取流程
 // ─────────────────────────────────────────────
-async function handleStartCapture(managementTabId, platform) {
+async function handleStartCapture(managementTabId, platform, captureMode = 'bind') {
   const cfg = PLATFORM_CONFIG[platform] || PLATFORM_CONFIG.fanqie;
 
   if (state.active) {
@@ -99,7 +130,12 @@ async function handleStartCapture(managementTabId, platform) {
     return;
   }
 
-  state = { active: true, platform, managementTabId, targetTabId: null, targetWinId: null };
+  if (cfg.openOnly) {
+    await handleOpenLoginOnly(managementTabId, cfg);
+    return;
+  }
+
+  state = { active: true, platform, captureMode, managementTabId, targetTabId: null, targetWinId: null };
   loginDetected = false;
 
   sendToTab(managementTabId, {
@@ -154,6 +190,23 @@ async function handleStartCapture(managementTabId, platform) {
   }, 5 * 60 * 1000);
 }
 
+/** 七猫等尚未接入抓取的平台：只打开登录页，不监听、不关窗、不抓 Cookie */
+async function handleOpenLoginOnly(managementTabId, cfg) {
+  sendToTab(managementTabId, {
+    type: 'FANQIE_CAPTURE_STATUS',
+    status: 'window_opened',
+    message: cfg.loginPendingMessage,
+  });
+
+  await chrome.windows.create({
+    url: cfg.loginUrl,
+    type: 'normal',
+    focused: true,
+    width: 1024,
+    height: 768,
+  });
+}
+
 // ─────────────────────────────────────────────
 // Step 2：监听 Tab URL 变化，检测登录成功
 // 双重保障：chrome.tabs.onUpdated 事件 + 每 2 秒轮询
@@ -182,19 +235,151 @@ function checkLoginSuccess(url) {
   if (!state.active || loginDetected) return;
   const cfg = PLATFORM_CONFIG[state.platform] || PLATFORM_CONFIG.fanqie;
   const isSite = cfg.isSiteDomain(url);
-  const isLoginPage = LOGIN_PAGE_PATTERN.test(url);
 
-  if (isSite && !isLoginPage) {
-    loginDetected = true;
-    stopLoginMonitor();
+  let loggedIn = false;
+  if (cfg.isLoggedInUrl) {
+    loggedIn = isSite && cfg.isLoggedInUrl(url);
+  } else {
+    const isLoginPage = cfg.isLoginPage ? cfg.isLoginPage(url) : LOGIN_PAGE_PATTERN.test(url);
+    loggedIn = isSite && !isLoginPage;
+  }
 
+  if (!loggedIn) return;
+
+  loginDetected = true;
+  stopLoginMonitor();
+
+  sendToTab(state.managementTabId, {
+    type: 'FANQIE_CAPTURE_STATUS',
+    status: 'capturing',
+    message: state.captureMode === 'relogin'
+      ? '检测到登录成功，正在收集 Cookie...'
+      : '检测到登录成功，正在获取作者资料...',
+  });
+
+  setTimeout(afterLoginDetected, 2000);
+}
+
+async function afterLoginDetected() {
+  if (!state.active) return;
+  const cfg = PLATFORM_CONFIG[state.platform] || PLATFORM_CONFIG.fanqie;
+
+  if (state.platform !== 'fanqie') {
     sendToTab(state.managementTabId, {
       type: 'FANQIE_CAPTURE_STATUS',
       status: 'capturing',
       message: '检测到登录成功，正在收集 Cookie...',
     });
+    const delayMs = state.platform === 'qimao' ? 2500 : 2000;
+    setTimeout(() => captureCookiesAndFinish(), delayMs);
+    return;
+  }
 
-    setTimeout(captureCookiesAndFinish, 4000);
+  // 重新登录：账号已在系统中，作者身份已开通，登录后直接抓取
+  if (state.captureMode === 'relogin') {
+    await finishFanqieReloginCapture(cfg);
+    return;
+  }
+
+  // 首次绑定：等待用户在弹出窗口完成作家入驻
+  if (timeoutHandle) {
+    clearTimeout(timeoutHandle);
+    timeoutHandle = null;
+  }
+  timeoutHandle = setTimeout(() => {
+    if (state.active) doCancel('等待开通作者超时（15 分钟），请完成作家入驻后重试');
+  }, AUTHOR_WAIT_TIMEOUT_MS);
+
+  sendToTab(state.managementTabId, {
+    type: 'FANQIE_CAPTURE_STATUS',
+    status: 'author_pending',
+    message: '登录成功！请在弹出窗口完成作家入驻，完成后将自动获取资料',
+  });
+
+  try {
+    await chrome.tabs.update(state.targetTabId, { url: cfg.writerUrl });
+  } catch (e) {
+    console.warn('[Ext] navigate to writer failed:', e);
+  }
+
+  authorWaitStartedAt = Date.now();
+  await pollAuthorOnceAndMaybeFinish(false);
+  if (!state.active) return;
+  authorPollHandle = setInterval(() => {
+    pollAuthorOnceAndMaybeFinish(false);
+  }, AUTHOR_POLL_INTERVAL_MS);
+}
+
+async function finishFanqieReloginCapture(cfg) {
+  sendToTab(state.managementTabId, {
+    type: 'FANQIE_CAPTURE_STATUS',
+    status: 'capturing',
+    message: '登录成功，正在收集 Cookie 与作者资料...',
+  });
+
+  try {
+    await chrome.tabs.update(state.targetTabId, { url: cfg.writerUrl });
+  } catch (e) {
+    console.warn('[Ext] navigate to writer failed:', e);
+  }
+
+  await new Promise((r) => setTimeout(r, 4000));
+
+  let profile = null;
+  try {
+    profile = await tryFetchFanqieProfile();
+  } catch (e) {
+    console.warn('[Ext] relogin profile fetch failed:', e);
+  }
+
+  await captureCookiesAndFinish(profile);
+}
+
+function isFanqieAuthorReady(profile) {
+  if (!profile) return false;
+  return !!(profile.mp_name || profile.author_name);
+}
+
+async function pollAuthorOnceAndMaybeFinish(manual) {
+  if (!state.active || state.platform !== 'fanqie') return;
+
+  if (state.captureMode === 'relogin') {
+    await finishFanqieReloginCapture(PLATFORM_CONFIG.fanqie);
+    return;
+  }
+
+  let profile = null;
+  try {
+    profile = await tryFetchFanqieProfile();
+  } catch (e) {
+    console.warn('[Ext] author poll failed:', e);
+  }
+
+  if (isFanqieAuthorReady(profile)) {
+    stopAuthorPoll();
+    sendToTab(state.managementTabId, {
+      type: 'FANQIE_CAPTURE_STATUS',
+      status: 'capturing',
+      message: `已检测到作者身份${profile.author_name ? `（${profile.author_name}）` : ''}，正在收集 Cookie...`,
+    });
+    await captureCookiesAndFinish(profile);
+    return;
+  }
+
+  const waitedSec = Math.max(0, Math.floor((Date.now() - authorWaitStartedAt) / 1000));
+  sendToTab(state.managementTabId, {
+    type: 'FANQIE_CAPTURE_STATUS',
+    status: 'author_pending',
+    message: manual
+      ? '尚未检测到作者身份，请继续在弹出窗口完成作家入驻'
+      : `等待开通作者身份…（已等待 ${waitedSec} 秒，请勿关闭窗口）`,
+  });
+}
+
+function stopAuthorPoll() {
+  if (authorPollHandle) {
+    clearInterval(authorPollHandle);
+    authorPollHandle = null;
   }
 }
 
@@ -212,9 +397,10 @@ function stopLoginMonitor() {
 // ─────────────────────────────────────────────
 // Step 3：收集 Cookie + 尝试获取用户名 + 回传结果
 // ─────────────────────────────────────────────
-async function captureCookiesAndFinish() {
+async function captureCookiesAndFinish(prefetchedProfile = null) {
   if (!state.active) return;
 
+  stopAuthorPoll();
   if (timeoutHandle) {
     clearTimeout(timeoutHandle);
     timeoutHandle = null;
@@ -247,26 +433,48 @@ async function captureCookiesAndFinish() {
 
   const cookieStr = allCookies.map((c) => `${c.name}=${c.value}`).join('; ');
 
-  // 尝试获取用户昵称（番茄和逐浪均支持）
+  // 尝试获取作者资料
+  let authorProfile = prefetchedProfile;
   let username = null;
   if (state.platform === 'fanqie') {
     try {
-      username = await tryFetchFanqieUsername();
+      if (!authorProfile) authorProfile = await tryFetchFanqieProfile();
+      username = authorProfile?.author_name || null;
+      if (state.captureMode !== 'relogin' && !isFanqieAuthorReady(authorProfile)) {
+        doCancel('尚未检测到作者身份，请完成作家入驻后重试');
+        return;
+      }
     } catch (e) {
-      console.warn('[Ext] fetchUsername(fanqie) failed:', e);
+      console.warn('[Ext] fetchProfile(fanqie) failed:', e);
+      doCancel('获取作者资料失败，请重试');
+      return;
     }
   } else if (state.platform === 'zhulang') {
     try {
-      username = await tryFetchZhulangUsername();
+      authorProfile = await tryFetchZhulangProfile();
+      username = authorProfile?.author_name || null;
     } catch (e) {
-      console.warn('[Ext] fetchUsername(zhulang) failed:', e);
+      console.warn('[Ext] fetchProfile(zhulang) failed:', e);
+    }
+  } else if (state.platform === 'qimao') {
+    try {
+      authorProfile = await tryFetchQimaoProfile();
+      username = authorProfile?.author_name || null;
+      if (!username) {
+        doCancel('未能获取七猫作者资料，请确认已登录并重试');
+        return;
+      }
+    } catch (e) {
+      console.warn('[Ext] fetchProfile(qimao) failed:', e);
+      doCancel('获取七猫作者资料失败，请重试');
+      return;
     }
   }
 
   const targetTabId = state.targetTabId;
   const targetWinId = state.targetWinId;
   const managementTabId = state.managementTabId;
-  state = { active: false, platform: 'fanqie', managementTabId: null, targetTabId: null, targetWinId: null };
+  state = { active: false, platform: 'fanqie', captureMode: 'bind', managementTabId: null, targetTabId: null, targetWinId: null };
   loginDetected = false;
 
   // 抓取完毕后清除浏览器里的平台 Cookie，避免 Vault session 被浏览器操作意外失效
@@ -286,6 +494,11 @@ async function captureCookiesAndFinish() {
     type: 'FANQIE_CAPTURE_RESULT',
     cookieStr,
     username,
+    phoneNumber: authorProfile?.phone_number || null,
+    avatarUrl: authorProfile?.avatar_url || null,
+    isAuth: authorProfile?.is_auth ?? null,
+    identityCodeMask: authorProfile?.identity_code_mask || null,
+    identityNameMask: authorProfile?.identity_name_mask || null,
     cookieCount: allCookies.length,
   });
 
@@ -297,18 +510,48 @@ async function captureCookiesAndFinish() {
 }
 
 // ─────────────────────────────────────────────
-// 辅助：获取番茄用户昵称（平台专属）
+// 辅助：获取番茄作者资料（平台专属）
 // ─────────────────────────────────────────────
-async function tryFetchFanqieUsername() {
+async function tryFetchFanqieProfile() {
   if (!state.targetTabId) return null;
 
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId: state.targetTabId },
       func: async () => {
-        const pickAuthorName = (data) => {
-          if (data?.code === 0 && data?.data?.author_name) return data.data.author_name;
-          return null;
+        const normalizeAvatarUrl = (url) => {
+          if (!url || typeof url !== 'string') return null;
+          const trimmed = url.trim().replace(/\\u0026/gi, '&').replace(/\\u003c/gi, '<').replace(/\\u003e/gi, '>');
+          if (!trimmed) return null;
+          if (trimmed.includes('fqnovelpic.com')) return trimmed;
+          const q = trimmed.search(/[?#]/);
+          const pathOnly = q >= 0 ? trimmed.slice(0, q) : trimmed;
+          const match = pathOnly.match(/novel-static\/([a-f0-9]+)/i);
+          if (match) {
+            return `https://p3-novel.byteimg.com/img/novel-static/${match[1].toLowerCase()}~tplv-obj.image`;
+          }
+          if (pathOnly.includes('byteimg.com')) return pathOnly;
+          if (pathOnly.startsWith('/')) return `https://fanqienovel.com${pathOnly}`;
+          return trimmed;
+        };
+        const parseProfile = (data) => {
+          if (data?.code !== 0 || !data?.data) return null;
+          const d = data.data;
+          const parseIsAuth = (v) => {
+            if (v === true || v === 1 || v === '1') return true;
+            if (v === false || v === 0 || v === '0') return false;
+            return false;
+          };
+          const isAuth = parseIsAuth(d.is_auth);
+          return {
+            author_name: d.author_name || null,
+            mp_name: d.mp_name || null,
+            phone_number: d.phone_number || null,
+            avatar_url: normalizeAvatarUrl(d.avatar_url),
+            is_auth: isAuth,
+            identity_code_mask: isAuth ? (d.identity_code_mask || null) : null,
+            identity_name_mask: isAuth ? (d.identity_name_mask || null) : null,
+          };
         };
         const resources = performance.getEntriesByType('resource');
 
@@ -317,8 +560,8 @@ async function tryFetchFanqieUsername() {
           try {
             const resp = await fetch(entry.name, { credentials: 'include' });
             if (!resp.ok) continue;
-            const name = pickAuthorName(await resp.json());
-            if (name) return name;
+            const profile = parseProfile(await resp.json());
+            if (profile) return profile;
           } catch (_) {}
         }
 
@@ -339,36 +582,69 @@ async function tryFetchFanqieUsername() {
             { credentials: 'include' }
           );
           if (!resp.ok) return null;
-          return pickAuthorName(await resp.json());
+          return parseProfile(await resp.json());
         } catch (_) {}
 
         return null;
       },
     });
-    const name = results?.[0]?.result;
-    if (name) return name;
+    return results?.[0]?.result || null;
   } catch (e) {
-    console.warn('[Ext] executeScript for username failed:', e);
+    console.warn('[Ext] executeScript for fanqie profile failed:', e);
   }
 
   return null;
 }
 
 // ─────────────────────────────────────────────
-// 辅助：获取逐浪作者名（平台专属）
-// 登录后跳转页（www.zhulang.com）只有用户名，作者名在写作中心。
-// 策略：把登录 tab 导航到写作中心，等页面加载后提取 li.uinfo > em。
+// 辅助：获取七猫作者资料（/api/author/profile）
 // ─────────────────────────────────────────────
-async function tryFetchZhulangUsername() {
+const QIMAO_PROFILE_URL = 'https://zuozhe.qimao.com/api/author/profile';
+
+async function tryFetchQimaoProfile() {
   if (!state.targetTabId) return null;
 
   try {
-    // 导航到写作中心（此时 cookie 已落下，能正常访问）
-    await chrome.tabs.update(state.targetTabId, {
-      url: 'https://writer.zhulang.com/book/index.html',
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: state.targetTabId },
+      func: async (profileUrl) => {
+        const parseRealStatus = (v) => v === 1 || v === '1';
+        const resp = await fetch(profileUrl, { credentials: 'include' });
+        if (!resp.ok) return null;
+        const json = await resp.json();
+        if (json?.code !== 200 || !json?.data?.user) return null;
+        const u = json.data.user;
+        const isAuth = parseRealStatus(u.real_status);
+        return {
+          author_name: u.pen_name || null,
+          phone_number: u.phone || null,
+          avatar_url: u.avatar || null,
+          is_auth: isAuth,
+          identity_code_mask: null,
+          identity_name_mask: null,
+        };
+      },
+      args: [QIMAO_PROFILE_URL],
     });
+    return results?.[0]?.result || null;
+  } catch (e) {
+    console.warn('[Ext] fetchProfile(qimao) failed:', e);
+  }
 
-    // 等待页面加载完成（最多 8 秒）
+  return null;
+}
+
+// ─────────────────────────────────────────────
+// 辅助：获取逐浪作者资料（作家资料页 HTML + 内嵌 dftInfoData / zluser）
+// ─────────────────────────────────────────────
+const ZHULANG_AUTHOR_URL = 'https://writer.zhulang.com/author/index.html';
+
+async function tryFetchZhulangProfile() {
+  if (!state.targetTabId) return null;
+
+  try {
+    await chrome.tabs.update(state.targetTabId, { url: ZHULANG_AUTHOR_URL });
+
     await new Promise((resolve) => {
       const listener = (tabId, changeInfo) => {
         if (tabId === state.targetTabId && changeInfo.status === 'complete') {
@@ -380,29 +656,64 @@ async function tryFetchZhulangUsername() {
       setTimeout(() => {
         chrome.tabs.onUpdated.removeListener(listener);
         resolve();
-      }, 8000);
+      }, 10000);
     });
 
-    // 额外等 1 秒，让 Vue 等框架完成渲染
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 1500));
 
     const results = await chrome.scripting.executeScript({
       target: { tabId: state.targetTabId },
+      world: 'MAIN',
       func: () => {
-        // li.uinfo > em 是逐浪写作中心导航栏的作者名节点
-        const el = document.querySelector('li.uinfo em') ||
-                   document.querySelector('.uinfo em');
-        const name = el?.textContent?.trim();
-        if (name && name.length > 0 && name.length < 30) return name;
-        return null;
+        const readInputByLabel = (labelText) => {
+          const items = document.querySelectorAll('.el-form-item');
+          for (const item of items) {
+            const label = item.querySelector('.el-form-item__label');
+            if (!label?.textContent?.includes(labelText)) continue;
+            const input = item.querySelector('input.el-input__inner, textarea.el-input__inner');
+            const val = input?.value?.trim();
+            if (val) return val;
+          }
+          return null;
+        };
+
+        const info = window.dftInfoData || {};
+        const user = window.zluser || {};
+
+        const penname = (info.penname || readInputByLabel('笔名') || document.querySelector('.uinfo em')?.textContent?.trim() || '').trim();
+        const phone = (info.phone || readInputByLabel('手机号码') || '').trim();
+        const realname = (info.realname || readInputByLabel('姓名') || '').trim();
+        const identityCode = (info.ID || readInputByLabel('身份证号') || '').trim();
+        const isAuth = !!(realname && identityCode);
+
+        if (!penname && !phone && !user.uid) return null;
+
+        return {
+          author_name: penname || null,
+          mp_name: user.uid ? String(user.uid) : null,
+          phone_number: phone || null,
+          avatar_url: user.avatar || null,
+          is_auth: isAuth,
+          identity_name_mask: isAuth ? realname : null,
+          identity_code_mask: isAuth ? identityCode : null,
+        };
       },
     });
 
     return results?.[0]?.result || null;
   } catch (e) {
-    console.warn('[Ext] fetchZhulangUsername failed:', e);
-    return null;
+    console.warn('[Ext] fetchZhulangProfile failed:', e);
   }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────
+// 辅助：获取逐浪作者名（兼容旧逻辑，已弃用）
+// ─────────────────────────────────────────────
+async function tryFetchZhulangUsername() {
+  const profile = await tryFetchZhulangProfile();
+  return profile?.author_name || null;
 }
 
 // ─────────────────────────────────────────────
@@ -410,13 +721,14 @@ async function tryFetchZhulangUsername() {
 // ─────────────────────────────────────────────
 function doCancel(reason) {
   stopLoginMonitor();
+  stopAuthorPoll();
   if (timeoutHandle) { clearTimeout(timeoutHandle); timeoutHandle = null; }
   loginDetected = false;
 
   const managementTabId = state.managementTabId;
   const targetTabId = state.targetTabId;
   const targetWinId = state.targetWinId;
-  state = { active: false, platform: 'fanqie', managementTabId: null, targetTabId: null, targetWinId: null };
+  state = { active: false, platform: 'fanqie', captureMode: 'bind', managementTabId: null, targetTabId: null, targetWinId: null };
 
   if (targetWinId) {
     chrome.windows.remove(targetWinId).catch(() => {});

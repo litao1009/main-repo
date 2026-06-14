@@ -11,7 +11,7 @@ function isExtensionAlive() {
 }
 
 // 需要转发给 background 的消息类型
-const FORWARD_TO_BG = ['FANQIE_CAPTURE_START', 'FANQIE_MANUAL_CAPTURE', 'FANQIE_INJECT_COOKIES'];
+const FORWARD_TO_BG = ['FANQIE_CAPTURE_START', 'FANQIE_MANUAL_CAPTURE', 'FANQIE_CAPTURE_CANCEL', 'FANQIE_INJECT_COOKIES'];
 
 // ── 监听来自网页的触发消息 ──────────────────────────
 window.addEventListener('message', (event) => {
@@ -29,11 +29,16 @@ window.addEventListener('message', (event) => {
   }
 
   try {
-    chrome.runtime.sendMessage({ type: event.data.type, cookieStr: event.data.cookieStr, platform: event.data.platform }, (response) => {
+    chrome.runtime.sendMessage({
+      type: event.data.type,
+      cookieStr: event.data.cookieStr,
+      platform: event.data.platform,
+      mode: event.data.mode,
+    }, (response) => {
       if (chrome.runtime.lastError) {
         window.postMessage({
           type: 'FANQIE_CAPTURE_ERROR',
-          message: '未检测到「番茄账号管家」扩展，请安装并启用后重试',
+          message: '未检测到「铸文坊账号管家」扩展，请安装并启用后重试',
         }, '*');
       }
     });
