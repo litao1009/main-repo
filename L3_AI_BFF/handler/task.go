@@ -446,40 +446,23 @@ func paginateTaskListJSON(tasksJSON []byte, page, size int) (string, error) {
 
 func sortTasksByAutoPublishPriority(tasks []map[string]interface{}) {
 	sort.SliceStable(tasks, func(i, j int) bool {
-		ti, qi := taskAutoPublishSortTier(tasks[i])
-		tj, qj := taskAutoPublishSortTier(tasks[j])
+		ti := taskAutoPublishSortTier(tasks[i])
+		tj := taskAutoPublishSortTier(tasks[j])
 		if ti != tj {
 			return ti < tj
 		}
-		if ti == 1 && qi != qj {
-			return qi < qj
-		}
-		return taskCreatedAtTime(tasks[i]).Before(taskCreatedAtTime(tasks[j]))
+		return taskCreatedAtTime(tasks[i]).After(taskCreatedAtTime(tasks[j]))
 	})
 }
 
-func taskAutoPublishSortTier(t map[string]interface{}) (tier int, queuePos int) {
-	status, _ := t["auto_publish_status"].(string)
-	switch status {
+func taskAutoPublishSortTier(t map[string]interface{}) int {
+	switch t["auto_publish_status"] {
 	case "running":
-		return 0, 0
+		return 0
 	case "queued":
-		return 1, taskQueuePositionFromMap(t)
+		return 1
 	default:
-		return 2, 0
-	}
-}
-
-func taskQueuePositionFromMap(t map[string]interface{}) int {
-	switch v := t["auto_publish_queue_position"].(type) {
-	case float64:
-		return int(v)
-	case int:
-		return v
-	case int64:
-		return int(v)
-	default:
-		return 1_000_000
+		return 2
 	}
 }
 

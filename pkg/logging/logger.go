@@ -316,11 +316,14 @@ func (l *Logger) LogProxyCall(upstream string, method string, body []byte, respS
 	l.buffer = append(l.buffer, sb.String())
 }
 
-func (l *Logger) Close() {
+func (l *Logger) Flush() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.flushLocked(false)
+}
 
-	if l.file != nil {
+func (l *Logger) flushLocked(writingFooter bool) {
+	if len(l.buffer) == 0 && !writingFooter {
 		return
 	}
 
@@ -330,22 +333,31 @@ func (l *Logger) Close() {
 
 	l.writeHeader()
 
-	fileHeaderSize := int64(0)
-	fi, _ := l.file.Stat()
-	fileHeaderSize = fi.Size()
+	if writingFooter {
+		l.headerDone = false
+	}
 
 	for _, entry := range l.buffer {
 		l.file.WriteString(entry)
 	}
+	l.file.Sync()
+	l.buffer = l.buffer[:0]
 
-	duration := time.Since(l.startTime)
-	ts := time.Now().Format(timeFormat)
-	footer := buildServiceFooter(l.serviceName, ts, duration, l.infoCount, l.warnCount, l.errorCount)
-	l.file.WriteString(footer)
-	l.file.Close()
-	l.file = nil
+	if writingFooter {
+		duration := time.Since(l.startTime)
+		ts := time.Now().Format(timeFormat)
+		footer := buildServiceFooter(l.serviceName, ts, duration, l.infoCount, l.warnCount, l.errorCount)
+		l.file.WriteString(footer)
+		l.file.Close()
+		l.file = nil
+	}
+}
 
-	_ = fileHeaderSize
+func (l *Logger) Close() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.flushLocked(true)
 }
 
 func (l *Logger) SessionSummary(w io.Writer) {

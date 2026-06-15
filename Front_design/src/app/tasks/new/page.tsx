@@ -3,7 +3,6 @@
 import { useEffect, useState, useCallback, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Textarea } from "@/components/ui/input"
-import { Select as SelectRadix, SelectItem } from "@/components/ui/select"
 import { fetchModels, fetchAccounts, createTask, createSession, allocSkill } from "@/lib/api"
 import { filterPublishableAccounts } from "@/lib/account-health"
 import type { Model, AccountSummary, AllocSkillItem } from "@/types"
@@ -170,7 +169,7 @@ export default function NewTaskPage() {
   const [allAccountsInvalid, setAllAccountsInvalid] = useState(false)
   const [skillsBusy, setSkillsBusy] = useState(false)
   const [showSkillSkeleton, setShowSkillSkeleton] = useState(false)
-  const [isAuto, setIsAuto] = useState(true)
+  const isAuto = true
   const [selectedTags, setSelectedTags] = useState<SelectedTags>(getEmptySelection())
   const [collapsedCats, setCollapsedCats] = useState<Record<string, boolean>>({ main: true, theme: true, role: true, plot: true })
 
@@ -347,7 +346,7 @@ export default function NewTaskPage() {
       <form id="new-task-form" onSubmit={handleSubmit} className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 space-y-7">
 
         {/* 发布平台 */}
-        <div>
+        <div data-tour="new-task-platform">
           <FieldHeader label="发布平台" required hint="单选" />
           <div className="grid grid-cols-5 gap-3">
             {PLATFORM_OPTS.map(opt => {
@@ -397,7 +396,7 @@ export default function NewTaskPage() {
         </div>
 
         {/* 发布账号 */}
-        <div>
+        <div data-tour="new-task-account">
           <FieldHeader label="发布账号" required hint="单选" />
           <div>
             {accountLoading ? (
@@ -489,40 +488,60 @@ export default function NewTaskPage() {
           </div>
         </div>
 
-        {/* AI 模型 + 全自动创作 */}
-        <div className="flex items-start gap-6">
-          <div className="flex-1 max-w-xs">
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-                   AI 模型 <span className="text-orange-500">*</span>
-            </label>
-            <SelectRadix value={modelId} onValueChange={setModelId} className="h-12 px-4 text-sm">
-              {models.map(m => (
-                <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
-              ))}
-            </SelectRadix>
-          </div>
-          <div className="flex items-center justify-between h-12 px-4 rounded-xl bg-slate-50 border border-slate-200 w-64 mt-[28px]">
-            <div className="text-sm font-medium text-slate-700">全自动创作</div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={isAuto}
-              onClick={() => { if (!isAuto) { setIsAuto(true) } else { toast.error("手动模式开发中") } }}
-              className={cn(
-                "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors",
-                isAuto ? "bg-orange-500" : "bg-slate-300"
-              )}
-            >
-              <span className={cn(
-                "inline-block h-4 w-4 rounded-full bg-white transition-transform shadow-sm",
-                isAuto ? "translate-x-6" : "translate-x-1"
-              )} />
-            </button>
-          </div>
+        {/* AI 模型 */}
+        <div data-tour="new-task-model">
+          <FieldHeader label="AI 模型" required hint="单选" />
+          {models.length === 0 ? (
+            <p className="flex min-h-9 items-center text-sm text-slate-400">暂无可用模型</p>
+          ) : (
+            <div className="grid grid-cols-5 gap-3">
+              {models.map(m => {
+                const sel = modelId === m.id
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setModelId(m.id)}
+                    className={cn(
+                      "relative flex min-h-16 items-center gap-2.5 rounded-xl border p-3 text-left transition-all",
+                      sel ? "border-orange-400 bg-orange-50" : "border-slate-200 bg-white hover:border-orange-300",
+                    )}
+                  >
+                    {sel && (
+                      <span className="absolute -top-2 -right-2 w-5 h-5 bg-orange-500 rounded-full flex items-center justify-center shadow-sm">
+                        <svg className="w-3 h-3" fill="none" stroke="white" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7"/>
+                        </svg>
+                      </span>
+                    )}
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-50 text-violet-600 text-sm font-bold ring-1 ring-slate-200">
+                      {m.name.charAt(0)}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p
+                        className={cn(
+                          "truncate text-xs font-semibold leading-tight",
+                          sel ? "text-orange-700" : "text-slate-900",
+                        )}
+                        title={m.name}
+                      >
+                        {m.name}
+                      </p>
+                      {m.provider && (
+                        <p className="mt-0.5 truncate text-xs text-slate-500" title={m.provider}>
+                          {m.provider}
+                        </p>
+                      )}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         {/* 创作方案 */}
-        <div>
+        <div data-tour="new-task-skill">
           <FieldHeader label="创作小说" required hint="单选" />
           {showSkillSkeleton && skillsBusy ? (
             <div className={SKILL_CARD_GRID} aria-busy="true">
@@ -684,6 +703,7 @@ export default function NewTaskPage() {
             <button
               type="submit"
               form="new-task-form"
+              data-tour="new-task-submit"
               disabled={submitting}
               className="px-7 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-orange-500 to-red-500 rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm flex items-center gap-2 transition-opacity"
             >

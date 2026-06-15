@@ -507,17 +507,18 @@ func (m *AutoPublishManager) FinishAutoPublish() gin.HandlerFunc {
 // ========== 核心发布循环（v7：写/存/发三阶段独立重试） ==========
 
 type chapterGenState struct {
-	draft         string
-	chapterTitle  string
-	sessionID     string
-	chapterNumber int
-	volume        string
-	apiVolumeName string
-	volumeId      string
-	draftItemID   string
-	fullTitle     string
-	platformInfo  *c1.PlatformInfo
-	cred          string
+	draft            string
+	chapterTitle     string
+	sessionID        string
+	chapterNumber    int
+	volume           string
+	apiVolumeName    string
+	volumeId         string
+	draftItemID      string
+	fullTitle        string
+	platformInfo     *c1.PlatformInfo
+	cred             string
+	hasExistingDraft bool
 }
 
 func (m *AutoPublishManager) autoPublishLoop(job *AutoPublishJob) {

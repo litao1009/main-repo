@@ -73,28 +73,32 @@ func (p *FanqiePlatform) Run(job *AutoPublishJob) {
 		}
 
 		if staged.draft == "" {
-			if err := p.mgr.phaseGenerate(job, staged); err != nil {
-				if errors.Is(err, ErrDailyLimitReached) {
-					log.Printf("[auto_publish] task=%s DAILY_LIMIT(AI生成), 退出并重新入队", job.TaskID)
-					p.mgr.cleanupSessions(job)
-					if job.onExitRequeue != nil {
-						job.onExitRequeue(job, err)
+			if staged.hasExistingDraft {
+				log.Printf("[auto_publish] task=%s 草稿箱已有第%d章草稿，跳过AI生成直接发布", job.TaskID, staged.chapterNumber)
+			} else {
+				if err := p.mgr.phaseGenerate(job, staged); err != nil {
+					if errors.Is(err, ErrDailyLimitReached) {
+						log.Printf("[auto_publish] task=%s DAILY_LIMIT(AI生成), 退出并重新入队", job.TaskID)
+						p.mgr.cleanupSessions(job)
+						if job.onExitRequeue != nil {
+							job.onExitRequeue(job, err)
+						}
+						return
 					}
-					return
-				}
-				job.retryCount++
-				if job.retryCount > maxRetries {
-					log.Printf("[auto_publish] task=%s AI生成连续失败%d次, 退出并重新入队", job.TaskID, maxRetries)
-					p.mgr.cleanupSessions(job)
-					if job.onExitRequeue != nil {
-						job.onExitRequeue(job, err)
+					job.retryCount++
+					if job.retryCount > maxRetries {
+						log.Printf("[auto_publish] task=%s AI生成连续失败%d次, 退出并重新入队", job.TaskID, maxRetries)
+						p.mgr.cleanupSessions(job)
+						if job.onExitRequeue != nil {
+							job.onExitRequeue(job, err)
+						}
+						return
 					}
-					return
+					log.Printf("[auto_publish] task=%s AI生成失败(第%d/%d次): %v, 1分钟后重试",
+						job.TaskID, job.retryCount, maxRetries, err)
+					p.mgr.sleepOrStop(job, 3*time.Minute)
+					continue
 				}
-				log.Printf("[auto_publish] task=%s AI生成失败(第%d/%d次): %v, 1分钟后重试",
-					job.TaskID, job.retryCount, maxRetries, err)
-				p.mgr.sleepOrStop(job, 1*time.Minute)
-				continue
 			}
 		}
 
@@ -119,7 +123,7 @@ func (p *FanqiePlatform) Run(job *AutoPublishJob) {
 				}
 				log.Printf("[auto_publish] task=%s 存草稿失败(第%d/%d次): %v, 1分钟后重试",
 					job.TaskID, job.retryCount, maxRetries, err)
-				p.mgr.sleepOrStop(job, 1*time.Minute)
+				p.mgr.sleepOrStop(job, 3*time.Minute)
 				continue
 			}
 			p.mgr.updateTaskChapterNumber(job, staged.chapterTitle, staged.chapterNumber)
@@ -145,7 +149,7 @@ func (p *FanqiePlatform) Run(job *AutoPublishJob) {
 			}
 			log.Printf("[auto_publish] task=%s 发布失败(第%d/%d次): %v, 1分钟后重试",
 				job.TaskID, job.retryCount, maxRetries, err)
-			p.mgr.sleepOrStop(job, 1*time.Minute)
+			p.mgr.sleepOrStop(job, 3*time.Minute)
 			continue
 		}
 
@@ -211,7 +215,7 @@ func (p *FanqiePlatform) Finalize(job *AutoPublishJob) error {
 		currentVolume = "第一卷"
 	}
 
-	nextChapter, nextVolume := p.determineNextChapter(lastPublished, currentVolume, currentChapter, platformInfo)
+	nextChapter, nextVolume, existingDraft := p.determineNextChapter(lastPublished, currentVolume, currentChapter, platformInfo)
 	log.Printf("[auto_publish] task=%s 计算下一章: volume=%s chapter=%d (lastPublished=%d currentChapter=%d)",
 		taskID, nextVolume, nextChapter, lastPublished.ChapterNumber, currentChapter)
 
@@ -225,6 +229,10 @@ func (p *FanqiePlatform) Finalize(job *AutoPublishJob) error {
 		}
 	}
 	log.Printf("[auto_publish] task=%s 分卷映射: nextVolume=%s apiVolumeName=%s volumeId=%s", taskID, nextVolume, apiVolumeName, volumeId)
+
+	if existingDraft != nil {
+		log.Printf("[auto_publish] task=%s 草稿箱中已有第%d章草稿 itemId=%s, 跳过生成直接发布", taskID, nextChapter, existingDraft.ItemID)
+	}
 
 	if p.isAlreadyPublished(lastPublished, nextChapter) {
 		log.Printf("[auto_publish] task=%s 章节 %d 已在已发布列表中，跳过生成，直接推进号", taskID, nextChapter)
@@ -428,9 +436,9 @@ func (p *FanqiePlatform) phasePrepare(job *AutoPublishJob) *chapterGenState {
 		lastPublished = &c1.FanqieLastPublished{ChapterNumber: 0}
 	}
 
-	nextChapter, nextVolume := p.determineNextChapter(lastPublished, currentVolume, currentChapter, platformInfo)
-	log.Printf("[auto_publish] task=%s 计算下一章: volume=%s chapter=%d (currentChapter=%d)",
-		taskID, nextVolume, nextChapter, currentChapter)
+	nextChapter, nextVolume, existingDraft := p.determineNextChapter(lastPublished, currentVolume, currentChapter, platformInfo)
+	log.Printf("[auto_publish] task=%s 计算下一章: volume=%s chapter=%d (currentChapter=%d lastPublished=%d)",
+		taskID, nextVolume, nextChapter, currentChapter, lastPublished.ChapterNumber)
 
 	var volumeId string
 	apiVolumeName := nextVolume
@@ -442,6 +450,10 @@ func (p *FanqiePlatform) phasePrepare(job *AutoPublishJob) *chapterGenState {
 		}
 	}
 	log.Printf("[auto_publish] task=%s 分卷映射: nextVolume=%s apiVolumeName=%s volumeId=%s", taskID, nextVolume, apiVolumeName, volumeId)
+
+	if existingDraft != nil {
+		log.Printf("[auto_publish] task=%s 草稿箱中已有第%d章草稿 itemId=%s, 跳过生成直接发布", taskID, nextChapter, existingDraft.ItemID)
+	}
 
 	if p.isAlreadyPublished(lastPublished, nextChapter) {
 		log.Printf("[auto_publish] task=%s 章节%d已发布, 跳过", taskID, nextChapter)
@@ -463,7 +475,7 @@ func (p *FanqiePlatform) phasePrepare(job *AutoPublishJob) *chapterGenState {
 	job.ChapterNumber = nextChapter
 	job.mu.Unlock()
 
-	return &chapterGenState{
+	state := &chapterGenState{
 		chapterNumber: nextChapter,
 		volume:        nextVolume,
 		apiVolumeName: apiVolumeName,
@@ -471,6 +483,13 @@ func (p *FanqiePlatform) phasePrepare(job *AutoPublishJob) *chapterGenState {
 		platformInfo:  platformInfo,
 		cred:          cred,
 	}
+	if existingDraft != nil {
+		state.hasExistingDraft = true
+		state.draftItemID = existingDraft.ItemID
+		state.fullTitle = existingDraft.Title
+		state.chapterTitle = existingDraft.Title
+	}
+	return state
 }
 
 // phaseSaveDraft 番茄存草稿（API优先，Puppeteer兜底）。
@@ -598,21 +617,19 @@ func (p *FanqiePlatform) getCredential(job *AutoPublishJob) (string, error) {
 }
 
 // determineNextChapter 根据平台状态计算下一个章号和卷名。
-func (p *FanqiePlatform) determineNextChapter(lastPublished *c1.FanqieLastPublished, currentVolume string, currentChapter int, platformInfo *c1.PlatformInfo) (int, string) {
-	if lastPublished == nil || lastPublished.ChapterNumber == 0 {
-		if currentChapter > 0 {
-			return currentChapter + 1, currentVolume
+func (p *FanqiePlatform) determineNextChapter(lastPublished *c1.FanqieLastPublished, currentVolume string, currentChapter int, platformInfo *c1.PlatformInfo) (int, string, *c1.FanqieDraftInfo) {
+	lastPubNum := 0
+	if lastPublished != nil {
+		lastPubNum = lastPublished.ChapterNumber
+	}
+	for _, pc := range platformInfo.PublishedChapters {
+		if pc.ChapterNumber > lastPubNum {
+			lastPubNum = pc.ChapterNumber
 		}
-		return 1, currentVolume
 	}
 
-	nextChapter := currentChapter + 1
+	nextChapter := lastPubNum + 1
 	nextVolume := currentVolume
-
-	if nextChapter <= lastPublished.ChapterNumber {
-		nextChapter = lastPublished.ChapterNumber + 1
-	}
-
 	if nextVolume == "" {
 		nextVolume = "第一卷"
 	}
@@ -620,7 +637,15 @@ func (p *FanqiePlatform) determineNextChapter(lastPublished *c1.FanqieLastPublis
 		nextChapter = 1
 	}
 
-	return nextChapter, nextVolume
+	var matchingDraft *c1.FanqieDraftInfo
+	for i := range platformInfo.Drafts {
+		if platformInfo.Drafts[i].ChapterNumber == nextChapter {
+			matchingDraft = &platformInfo.Drafts[i]
+			break
+		}
+	}
+
+	return nextChapter, nextVolume, matchingDraft
 }
 
 // isAlreadyPublished 检查章节是否已在已发布列表中。

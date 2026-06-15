@@ -67,6 +67,17 @@ const OPEN_PLATFORM_META: Record<string, { title: string }> = {
   zhulang: { title: '打开逐浪作家后台' },
 }
 
+/** 各平台实名认证页（注入 Cookie 后打开） */
+const IDENTITY_VERIFY_PAGES: Record<string, { url: string; scrollTo?: 'bottom' }> = {
+  fanqie: {
+    url: 'https://fanqienovel.com/main/writer/user-info?enter_from=avatar',
+    scrollTo: 'bottom',
+  },
+  qimao: {
+    url: 'https://zuozhe.qimao.com/front/personal-information',
+  },
+}
+
 /** 各平台卡片图标配色 */
 const PLATFORM_ICON: Record<string, { bg: string; text: string; char: string }> = {
   fanqie: { bg: "bg-red-50",    text: "text-red-500",    char: "番" },
@@ -101,10 +112,22 @@ function mergeProfileIntoAccount(acc: AccountSummary, profile: SyncProfileRespon
   }
 }
 
-/** 番茄「已实名」点击展开的脱敏信息浮层 */
-function AuthIdentityBadge({ acc }: { acc: AccountSummary }) {
+/** 番茄「已实名」点击展开的脱敏信息浮层；未实名时番茄/七猫可跳转平台实名页 */
+function AuthIdentityBadge({
+  acc,
+  onGoVerify,
+  verifyDisabled,
+  verifyTourAnchor,
+}: {
+  acc: AccountSummary
+  onGoVerify?: (acc: AccountSummary) => void
+  verifyDisabled?: boolean
+  verifyTourAnchor?: boolean
+}) {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
+  const verifyPage = IDENTITY_VERIFY_PAGES[acc.platform]
+  const showGoVerify = !acc.is_auth && !!verifyPage && !!onGoVerify
   const hasIdentity = !!(
     acc.is_auth && (
       acc.platform === 'qimao'
@@ -126,6 +149,28 @@ function AuthIdentityBadge({ acc }: { acc: AccountSummary }) {
   }, [open])
 
   if (!['fanqie', 'zhulang', 'qimao'].includes(acc.platform)) return null
+
+  if (showGoVerify) {
+    const verifyTitle = verifyDisabled
+      ? 'Cookie 失效或正在打开页面，请稍后或先重新登录'
+      : `前往${PLATFORM_LABELS[acc.platform] || acc.platform}完成实名认证`
+    return (
+      <button
+        type="button"
+        disabled={verifyDisabled}
+        onClick={() => onGoVerify!(acc)}
+        {...(verifyTourAnchor ? { "data-tour": "accounts-verify" } : {})}
+        className={`inline-flex shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors border ${
+          verifyDisabled
+            ? 'bg-sky-50/70 text-sky-400 border-sky-100 cursor-not-allowed'
+            : 'bg-sky-50 text-sky-700 border-sky-200/80 hover:bg-sky-100 hover:border-sky-300 cursor-pointer'
+        }`}
+        title={verifyTitle}
+      >
+        去实名
+      </button>
+    )
+  }
 
   return (
     <div ref={wrapRef} className="relative shrink-0">
@@ -508,6 +553,36 @@ export default function AccountsPage() {
     }
   }
 
+  const handleGoVerifyIdentity = async (acc: AccountSummary) => {
+    const page = IDENTITY_VERIFY_PAGES[acc.platform]
+    if (!page) return
+    setInjectStatusMap(prev => ({ ...prev, [acc.account_id]: 'injecting' }))
+    try {
+      const resp = await fetchAccountCredential(acc.account_id)
+      window.postMessage({
+        type: 'FANQIE_INJECT_COOKIES',
+        cookieStr: resp.credentials,
+        platform: acc.platform,
+        targetUrl: page.url,
+        ...(page.scrollTo ? { scrollTo: page.scrollTo } : {}),
+      }, '*')
+      setTimeout(() => {
+        setInjectStatusMap(prev => {
+          if (prev[acc.account_id] === 'injecting') {
+            const next = { ...prev }
+            delete next[acc.account_id]
+            return next
+          }
+          return prev
+        })
+      }, 10000)
+    } catch (err) {
+      setInjectStatusMap(prev => ({ ...prev, [acc.account_id]: 'error' }))
+      toast.error(err instanceof Error ? err.message : '获取凭证失败，请重试')
+      setTimeout(() => setInjectStatusMap(prev => { const next = { ...prev }; delete next[acc.account_id]; return next }), 3000)
+    }
+  }
+
   const handleReLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!reLoginTarget || !reLoginCredentials.trim()) return
@@ -558,6 +633,21 @@ export default function AccountsPage() {
       grouped[a.platform] = filteredAccounts.filter(x => x.platform === a.platform)
     }
   })
+
+  const tourVerifyAccountId = filteredAccounts.find((acc) => {
+    const verifyPage = IDENTITY_VERIFY_PAGES[acc.platform]
+    return !acc.is_auth && !!verifyPage && ['fanqie', 'zhulang', 'qimao'].includes(acc.platform)
+  })?.account_id
+
+  const tourOpenPlatformAccountId = filteredAccounts.find((acc) => {
+    const status = cookieStatusMap[acc.account_id]
+    const entry = getCachedEntry(acc.account_id)
+    const isChecking = status === 'checking'
+    const resolvedStatus: CookieHealthStatus | 'unknown' =
+      isChecking ? (entry?.status ?? 'unknown') : (status ?? 'unknown')
+    const isExpired = resolvedStatus === 'expired'
+    return !!OPEN_PLATFORM_META[acc.platform] && !isExpired
+  })?.account_id
 
   /** 卡片底部 Cookie 状态行 */
   function CookieStatusLine({ accountId, isExpired }: { accountId: string; isExpired: boolean }) {
@@ -617,6 +707,7 @@ export default function AccountsPage() {
           </button>
           <button
             onClick={() => setShowBindModal(true)}
+            data-tour="accounts-bind"
             className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 transition-colors shadow-sm flex items-center gap-1.5"
           >
             <Plus size={15} />
@@ -734,7 +825,12 @@ export default function AccountsPage() {
                               >
                                 {acc.masked_display}
                               </h4>
-                              <AuthIdentityBadge acc={acc} />
+                              <AuthIdentityBadge
+                                acc={acc}
+                                onGoVerify={handleGoVerifyIdentity}
+                                verifyDisabled={isExpired || isChecking || !!injectStatusMap[acc.account_id]}
+                                verifyTourAnchor={acc.account_id === tourVerifyAccountId}
+                              />
                             </div>
                             {acc.phone_number ? (
                               <p className="mt-0.5 text-xs text-slate-500 truncate tabular-nums">{acc.phone_number}</p>
@@ -750,6 +846,7 @@ export default function AccountsPage() {
                                 title={openMeta.title}
                                 onClick={() => handleOpenPlatform(acc)}
                                 disabled={isChecking || !!injectStatusMap[acc.account_id]}
+                                {...(acc.account_id === tourOpenPlatformAccountId ? { "data-tour": "accounts-open-platform" } : {})}
                                 className={`inline-flex h-8 w-8 items-center justify-center rounded-full text-white shadow-sm transition-all hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 ${OPEN_PLATFORM_BTN_CLASS}`}
                               >
                                 {injectStatusMap[acc.account_id] === 'injecting'

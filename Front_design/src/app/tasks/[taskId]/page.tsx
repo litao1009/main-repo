@@ -1279,21 +1279,25 @@ export default function SessionPage() {
                   {publishHeaderMeta}
                 </span>
               ) : null}
-              <AutoPublishHeaderStatus
-                data={autoPublishStatus}
-                loading={autoPublishStatusLoading}
-              />
+              <span data-tour="task-detail-publish-status">
+                <AutoPublishHeaderStatus
+                  data={autoPublishStatus}
+                  loading={autoPublishStatusLoading}
+                />
+              </span>
             </div>
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {authMounted && !autoPublishStatusLoading && autoPublishStatus?.auto_publish_status !== "deleted" && (
             <>
-              <AutoPublishRunToggle
-                autoPublishStatus={autoPublishStatus?.auto_publish_status}
-                loading={publishToggleLoading}
-                onToggle={handlePublishToggle}
-              />
+              <div data-tour="task-detail-publish-toggle">
+                <AutoPublishRunToggle
+                  autoPublishStatus={autoPublishStatus?.auto_publish_status}
+                  loading={publishToggleLoading}
+                  onToggle={handlePublishToggle}
+                />
+              </div>
               <button
                 type="button"
                 onClick={() => setShowDeleteModal(true)}
@@ -1499,7 +1503,7 @@ export default function SessionPage() {
         </section>
 
         {/* 中：卷章树 */}
-        <section className="w-[18%] min-w-[200px] max-w-[260px] border-r border-slate-200 bg-white flex flex-col shadow-[inset_4px_0_12px_-8px_rgba(15,23,42,0.06)]">
+        <section data-tour="task-detail-chapters" className="w-[18%] min-w-[200px] max-w-[260px] border-r border-slate-200 bg-white flex flex-col shadow-[inset_4px_0_12px_-8px_rgba(15,23,42,0.06)]">
           <div className="h-11 px-3 border-b border-slate-200 flex items-center shrink-0 bg-white">
             <p className="text-xs text-slate-500 tabular-nums">
               {chapterStats.total > 0 ? (
@@ -1587,7 +1591,7 @@ export default function SessionPage() {
         </section>
 
         {/* 右：章节内容 */}
-        <section className="flex-1 bg-white flex flex-col min-w-0">
+        <section data-tour="task-detail-content" className="flex-1 bg-white flex flex-col min-w-0">
           <div className="h-11 px-4 border-b border-slate-200 bg-white flex items-center justify-between gap-3 shrink-0 min-w-0">
             {selectedChapter ? (
               <>

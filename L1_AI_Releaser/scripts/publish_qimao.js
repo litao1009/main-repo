@@ -494,13 +494,8 @@ async function doSetBookInfo(cookieStr, input) {
         const coverURL = uploadResult.coverURL;
         log('info', 'cover uploaded', { path: coverURL });
 
-        try {
-            const jpegBuf = Buffer.from(uploadResult.jpegBase64, 'base64');
-            fs.writeFileSync('/tmp/logs/qimao_cover_jpeg_' + input.bookId + '.jpeg', jpegBuf);
-            log('info', 'saved jpeg cover to disk', { bookId: input.bookId, size: jpegBuf.length });
-        } catch (e) {
-            log('warn', 'failed to save jpeg cover', { error: e.message });
-        }
+        const jpegSize = Buffer.from(uploadResult.jpegBase64, 'base64').length;
+        log('info', 'cover jpeg size from browser', { bookId: input.bookId, size: jpegSize });
 
         const params = {
             book_activity_id: '0',
@@ -513,7 +508,7 @@ async function doSetBookInfo(cookieStr, input) {
             characters: characters || '',
             client_id: '1',
             cover_ai_type: '0',
-            cover_num: 1,
+            cover_num: 5,
             cover_type: '3',
             is_girl: '0',
             is_over: '0',

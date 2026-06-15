@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "铸文坊账号管家",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "铸文坊发布账号助手：绑定番茄小说、七猫、逐浪网等平台账号，自动抓取登录凭证与作者资料并安全同步至管理平台。",
   "icons": {
     "16": "icons/icon16.png",

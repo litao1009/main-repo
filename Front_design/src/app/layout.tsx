@@ -2,6 +2,7 @@ import type { Metadata } from "next"
 import { Inter } from "next/font/google"
 import { AuthGuard } from "@/components/layout/auth-guard"
 import { LayoutSwitcher } from "@/components/layout/layout-switcher"
+import { OnboardingProvider } from "@/components/onboarding/onboarding-provider"
 import { ToastContainer } from "@/components/ui/toast"
 import "./globals.css"
 
@@ -22,7 +23,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="zh-CN" className={inter.variable}>
       <body className={inter.className}>
         <AuthGuard>
-          <LayoutSwitcher>{children}</LayoutSwitcher>
+          <OnboardingProvider>
+            <LayoutSwitcher>{children}</LayoutSwitcher>
+          </OnboardingProvider>
         </AuthGuard>
         <ToastContainer />
       </body>

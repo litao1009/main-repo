@@ -109,7 +109,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (state.active) doCancel('已取消绑定流程');
     sendResponse({ ok: true });
   } else if (msg.type === 'FANQIE_INJECT_COOKIES') {
-    handleInjectCookies(msg.cookieStr, msg.platform || 'fanqie', sender.tab.id);
+    handleInjectCookies(msg.cookieStr, msg.platform || 'fanqie', sender.tab.id, {
+      targetUrl: msg.targetUrl,
+      scrollTo: msg.scrollTo,
+    });
     sendResponse({ ok: true });
   }
   return true;
@@ -772,8 +775,10 @@ function parseCookieString(cookieStr) {
   }).filter(Boolean);
 }
 
-async function handleInjectCookies(cookieStr, platform, managementTabId) {
+async function handleInjectCookies(cookieStr, platform, managementTabId, options = {}) {
   const cfg = PLATFORM_CONFIG[platform] || PLATFORM_CONFIG.fanqie;
+  const targetUrl = options.targetUrl || cfg.writerUrl;
+  const scrollTo = options.scrollTo;
 
   if (!cookieStr) {
     sendToTab(managementTabId, { type: 'FANQIE_INJECT_ERROR', message: 'Cookie 为空' });
@@ -821,6 +826,37 @@ async function handleInjectCookies(cookieStr, platform, managementTabId) {
   }
 
   sendToTab(managementTabId, { type: 'FANQIE_INJECT_STATUS', message: `已注入 ${successCount} 条 Cookie，正在打开页面...` });
-  chrome.tabs.create({ url: cfg.writerUrl, active: true });
+  const tab = await chrome.tabs.create({ url: targetUrl, active: true });
+  if (scrollTo && tab?.id != null) {
+    scheduleInjectScroll(tab.id, scrollTo);
+  }
   sendToTab(managementTabId, { type: 'FANQIE_INJECT_DONE' });
+}
+
+function scheduleInjectScroll(tabId, scrollTo) {
+  const delays = [600, 1500, 3000, 5000];
+  for (const delay of delays) {
+    setTimeout(() => {
+      scrollInjectedTab(tabId, scrollTo).catch(() => {});
+    }, delay);
+  }
+}
+
+async function scrollInjectedTab(tabId, scrollTo) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab || tab.discarded) return;
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (mode) => {
+      const max = Math.max(
+        document.documentElement?.scrollHeight ?? 0,
+        document.body?.scrollHeight ?? 0,
+        window.innerHeight,
+      );
+      const top = mode === 'bottom' ? max : max / 2;
+      window.scrollTo({ top, behavior: 'smooth' });
+    },
+    args: [scrollTo],
+  });
 }

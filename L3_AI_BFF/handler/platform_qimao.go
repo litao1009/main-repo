@@ -489,7 +489,7 @@ func (p *QimaoPlatform) ensureBookExists(job *AutoPublishJob, cred, novelName st
 
 // setNewBookInfo 从 skill 元数据中提取书籍信息并调用 SetBookInfo 上传封面和设置分类/简介。
 func (p *QimaoPlatform) setNewBookInfo(job *AutoPublishJob, cred, bookId, novelName string) {
-	_, description, category, roles, fetchErr := p.mgr.fetchSkillMeta(job.SkillID)
+	_, description, _, roles, fetchErr := p.mgr.fetchSkillMeta(job.SkillID)
 	if fetchErr != nil {
 		log.Printf("[auto_publish] task=%s 获取skill元信息失败(qimao): %v", job.TaskID, fetchErr)
 		return
@@ -506,15 +506,18 @@ func (p *QimaoPlatform) setNewBookInfo(job *AutoPublishJob, cred, bookId, novelN
 		log.Printf("[auto_publish] task=%s 下载渲染封面失败(qimao): %v", job.TaskID, downloadErr)
 		return
 	}
-	_ = os.WriteFile(fmt.Sprintf("/tmp/logs/qimao_cover_raw_%s.png", job.TaskID), coverBytes, 0644)
 
 	bookOpt, optErr := p.adapter.GetBookOption(job.stopCtx, cred)
 	if optErr != nil {
 		log.Printf("[auto_publish] task=%s 获取建书选项失败(qimao): %s", job.TaskID, optErr.ErrorMessage)
 	}
+	category1 := ""
 	category2 := ""
 	tagIds := ""
 	if bookOpt != nil {
+		if bookOpt.Category1 != "" {
+			category1 = bookOpt.Category1
+		}
 		if bookOpt.Category2 != "" {
 			category2 = bookOpt.Category2
 		}
@@ -525,7 +528,7 @@ func (p *QimaoPlatform) setNewBookInfo(job *AutoPublishJob, cred, bookId, novelN
 		}
 	}
 
-	result := p.adapter.SetBookInfo(job.stopCtx, cred, bookId, novelName, description, category, category2, tagIds, roles, coverBytes)
+	result := p.adapter.SetBookInfo(job.stopCtx, cred, bookId, novelName, description, category1, category2, tagIds, roles, coverBytes)
 	if result.Status != "ok" {
 		log.Printf("[auto_publish] task=%s 设置书籍信息失败(qimao): %s (code=%s)", job.TaskID, result.ErrorMessage, result.ErrorCode)
 	} else {

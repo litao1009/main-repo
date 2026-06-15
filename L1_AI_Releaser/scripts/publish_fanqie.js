@@ -300,7 +300,7 @@ async function fetchChapterListViaAPI(page, workId) {
             }, workId, pageIdx, msToken);
             if (pageIdx === 0) log('info', 'chapter_list API response', { workId, pageIdx, code: raw.code, count: raw.list.length });
             if (raw.code !== 0 || raw.list.length === 0) break;
-            for (const c of raw.list) { const ch = { chapterNumber: parseChapterNumber(c), title: c.title || '', isPublished: true }; chapters.push(ch); lastPublished = { chapterNumber: ch.chapterNumber, title: ch.title }; }
+            for (const c of raw.list) { const ch = { chapterNumber: parseChapterNumber(c), title: c.title || '', isPublished: true }; chapters.push(ch); if (!lastPublished || ch.chapterNumber > lastPublished.chapterNumber) { lastPublished = { chapterNumber: ch.chapterNumber, title: ch.title }; } }
         }
         return { chapters, lastPublished };
     } catch (e) { log('warn', 'fetchChapterListViaAPI error', { error: e.message }); return { chapters: [], lastPublished: null }; }

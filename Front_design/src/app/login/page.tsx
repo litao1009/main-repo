@@ -3,6 +3,11 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { login } from "@/lib/auth"
+import {
+  getFirstLoginPath,
+  isFirstLoginRedirectDone,
+  markFirstLoginRedirectDone,
+} from "@/lib/onboarding/storage"
 import { Eye, EyeOff, Loader2 } from "lucide-react"
 
 export default function LoginPage() {
@@ -28,8 +33,13 @@ export default function LoginPage() {
 
     setLoading(true)
     try {
-      await login(account, password)
-      router.replace("/tasks")
+      const user = await login(account, password)
+      if (!isFirstLoginRedirectDone()) {
+        markFirstLoginRedirectDone()
+        router.replace(getFirstLoginPath(user.role))
+      } else {
+        router.replace("/tasks")
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "登录失败")
     } finally {

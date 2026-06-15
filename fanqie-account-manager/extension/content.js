@@ -34,6 +34,8 @@ window.addEventListener('message', (event) => {
       cookieStr: event.data.cookieStr,
       platform: event.data.platform,
       mode: event.data.mode,
+      targetUrl: event.data.targetUrl,
+      scrollTo: event.data.scrollTo,
     }, (response) => {
       if (chrome.runtime.lastError) {
         window.postMessage({

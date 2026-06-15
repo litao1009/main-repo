@@ -115,6 +115,7 @@ export default function AdminUsersPage() {
         </div>
         <button
           onClick={() => setShowCreate(true)}
+          data-tour="admin-invite"
           className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 shadow-sm transition-colors"
         >
           + 邀请新用户
@@ -195,6 +196,9 @@ export default function AdminUsersPage() {
         </div>
       ) : (
         <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+          {(() => {
+            const tourTargetUser = users.find((u) => u.uid !== currentUser?.uid)
+            return (
           <table className="w-full text-left text-sm table-fixed">
             <colgroup>
               <col className="w-[22%]" />
@@ -211,13 +215,14 @@ export default function AdminUsersPage() {
                 <th className="px-6 py-4 font-medium text-center">绑定账号</th>
                 <th className="px-6 py-4 font-medium text-center">任务数</th>
                 <th className="px-6 py-4 font-medium">最后登录</th>
-                <th className="px-6 py-4 font-medium text-right">操作</th>
+                <th className="px-6 py-4 font-medium text-right" data-tour="admin-actions-header">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-700">
               {users.map((u) => {
                 const isSelf = u.uid === currentUser?.uid
                 const isAdminRole = u.role === "admin"
+                const isTourTarget = u.uid === tourTargetUser?.uid
                 return (
                   <tr key={u.uid} className="hover:bg-slate-50 transition-colors">
 
@@ -268,6 +273,7 @@ export default function AdminUsersPage() {
                       <div className="flex items-center justify-end gap-4">
                         <button
                           onClick={() => setShowEdit(u)}
+                          {...(isTourTarget ? { "data-tour": "admin-edit" } : {})}
                           className="text-orange-600 hover:text-orange-700 font-medium transition-colors"
                         >
                           编辑
@@ -283,6 +289,7 @@ export default function AdminUsersPage() {
                           <button
                             onClick={() => setDeleteTarget(u)}
                             title="删除用户"
+                            {...(isTourTarget ? { "data-tour": "admin-delete" } : {})}
                             className="text-red-500 hover:text-red-700 font-medium transition-colors"
                           >
                             删除
@@ -295,6 +302,8 @@ export default function AdminUsersPage() {
               })}
             </tbody>
           </table>
+            )
+          })()}
         </div>
       )}
 

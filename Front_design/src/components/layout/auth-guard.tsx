@@ -2,7 +2,12 @@
 
 import { useEffect, useState, useRef } from "react"
 import { usePathname, useRouter } from "next/navigation"
-import { isAuthenticated, verifySession } from "@/lib/auth"
+import { getAuthUser, isAuthenticated, verifySession } from "@/lib/auth"
+import {
+  getFirstLoginPath,
+  isFirstLoginRedirectDone,
+  markFirstLoginRedirectDone,
+} from "@/lib/onboarding/storage"
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
@@ -19,7 +24,13 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
           if (valid) {
             if (!redirectingRef.current) {
               redirectingRef.current = true
-              router.replace("/tasks/new")
+              if (!isFirstLoginRedirectDone()) {
+                const user = getAuthUser()
+                markFirstLoginRedirectDone()
+                router.replace(user ? getFirstLoginPath(user.role) : "/tasks/new")
+              } else {
+                router.replace("/tasks/new")
+              }
             }
           } else {
             setReady(true)

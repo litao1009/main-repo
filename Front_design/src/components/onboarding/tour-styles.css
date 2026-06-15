@@ -1,0 +1,95 @@
+/* driver.js — 铸文坊橙色主题 */
+
+.driver-active-element {
+  outline: 2px solid #fb923c !important;
+  outline-offset: 3px;
+}
+
+.driver-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+.driver-popover {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 0.75rem !important;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12) !important;
+  padding: 1.25rem !important;
+  max-width: 320px !important;
+  font-family: inherit !important;
+}
+
+.driver-popover-title {
+  font-size: 1rem !important;
+  font-weight: 600 !important;
+  color: #0f172a !important;
+  letter-spacing: -0.01em !important;
+  margin-bottom: 0.375rem !important;
+}
+
+.driver-popover-description {
+  font-size: 0.875rem !important;
+  color: #64748b !important;
+  line-height: 1.5 !important;
+}
+
+.driver-popover-footer {
+  margin-top: 1rem !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 0.5rem !important;
+}
+
+.driver-popover-progress-text {
+  font-size: 0.75rem !important;
+  color: #94a3b8 !important;
+}
+
+.driver-popover-navigation-btns {
+  display: flex !important;
+  gap: 0.5rem !important;
+}
+
+.driver-popover-prev-btn,
+.driver-popover-next-btn {
+  font-size: 0.8125rem !important;
+  font-weight: 500 !important;
+  border-radius: 0.5rem !important;
+  padding: 0.375rem 0.875rem !important;
+  border: 1px solid #e2e8f0 !important;
+  background: #ffffff !important;
+  color: #475569 !important;
+  text-shadow: none !important;
+  transition: background 0.15s, color 0.15s !important;
+}
+
+.driver-popover-prev-btn:hover,
+.driver-popover-next-btn:hover {
+  background: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+.driver-popover-next-btn {
+  background: linear-gradient(to right, #f97316, #ef4444) !important;
+  border-color: transparent !important;
+  color: #ffffff !important;
+}
+
+.driver-popover-next-btn:hover {
+  opacity: 0.9 !important;
+  background: linear-gradient(to right, #ea580c, #dc2626) !important;
+  color: #ffffff !important;
+}
+
+.driver-popover-close-btn {
+  color: #94a3b8 !important;
+}
+
+.driver-popover-close-btn:hover {
+  color: #475569 !important;
+}
+
+.driver-popover-arrow {
+  border-color: #ffffff !important;
+}

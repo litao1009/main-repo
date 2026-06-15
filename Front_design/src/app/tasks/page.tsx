@@ -104,7 +104,7 @@ export default function TaskListPage() {
   return (
     <div className="max-w-7xl mx-auto px-6 pt-8">
       <div className="flex items-end justify-between mb-8">
-        <div>
+        <div data-tour="task-list-header">
           <h1 className="text-3xl font-bold text-slate-900 tracking-tight">任务列表</h1>
           <p className="text-slate-500 mt-1 text-sm">管理您所有的内容创作与发布任务</p>
         </div>
@@ -113,6 +113,7 @@ export default function TaskListPage() {
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <Input
+                data-tour="task-list-search"
                 value={searchInput}
                 onChange={e => setSearchInput(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter") updateURL(1, searchInput.trim()) }}
@@ -125,7 +126,7 @@ export default function TaskListPage() {
             </Button>
           </div>
           <Link href="/tasks/new">
-            <button className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 shadow-sm flex items-center gap-1.5 transition-colors">
+            <button data-tour="task-list-create" className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 shadow-sm flex items-center gap-1.5 transition-colors">
               <Plus size={15} />新建创作
             </button>
           </Link>
@@ -160,7 +161,7 @@ export default function TaskListPage() {
       ) : (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-            {tasks.map(task => {
+            {tasks.map((task, index) => {
               const subtitle = getTaskCardSubtitle(task)
               const updatedLabel = formatTaskUpdatedLabel(task.last_active_at)
               return (
@@ -173,6 +174,7 @@ export default function TaskListPage() {
                   listQ: search,
                 })}
                 className="flex flex-col"
+                {...(index === 0 ? { "data-tour": "task-list-card" } : {})}
               >
                 <div
                   className={cn(
