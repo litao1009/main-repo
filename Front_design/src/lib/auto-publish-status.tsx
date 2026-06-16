@@ -291,7 +291,7 @@ export function AutoPublishRunToggle({
             : "text-slate-500 hover:text-slate-700",
         )}
       >
-        已暂停
+        暂停
       </button>
       <button
         type="button"
@@ -306,7 +306,7 @@ export function AutoPublishRunToggle({
             : "text-slate-500 hover:text-slate-700",
         )}
       >
-        运行中
+        运行
       </button>
       {loading ? (
         <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-white/60">

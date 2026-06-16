@@ -48,27 +48,29 @@ type AutoPublishManager struct {
 }
 
 type AutoPublishJob struct {
-	TaskID        string
-	UserID        string
-	Platform      string
-	Accounts      []map[string]string
-	SkillID       string
-	Topic         string
-	NovelName     string
-	VolumeName    string
-	ChapterNumber int
-	DraftVersion  int
-	Status        string
-	WorkID        string
-	stopCtx       context.Context
-	stopCancel    context.CancelFunc
-	finishCh      chan struct{}
-	mu            sync.Mutex
-	createdAt     time.Time
-	retryCount    int
-	BookInfoSet   bool
-	onExit        func(job *AutoPublishJob, newStatus string)
-	onExitRequeue func(job *AutoPublishJob, err error)
+	TaskID            string
+	UserID            string
+	Platform          string
+	Accounts          []map[string]string
+	SkillID           string
+	Topic             string
+	NovelName         string
+	VolumeName        string
+	ChapterNumber     int
+	ChaptersThisBatch int
+	DraftVersion      int
+	Status            string
+	WorkID            string
+	stopCtx           context.Context
+	stopCancel        context.CancelFunc
+	finishCh          chan struct{}
+	mu                sync.Mutex
+	createdAt         time.Time
+	retryCount        int
+	BookInfoSet       bool
+	onExit            func(job *AutoPublishJob, newStatus string)
+	onExitRequeue     func(job *AutoPublishJob, err error)
+	onChapterPublished func(job *AutoPublishJob)
 }
 
 func NewAutoPublishManager(sessionMgrURL, workflowURL, accountURL, skillRegistryURL, stoppedTasksFile string, platforms map[string]NovelPlatform, a1BaseURL string) *AutoPublishManager {

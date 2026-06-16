@@ -13,17 +13,19 @@ import (
 	"time"
 
 	c1 "clawstudios/l1_ai_releaser/services/c1_publisher"
+	"github.com/claw-studio/L3_AI_BFF/config"
 )
 
 // QimaoPlatform 七猫小说平台自动发布实现。
 type QimaoPlatform struct {
 	mgr     *AutoPublishManager
 	adapter *c1.QimaoPublishAdapter
+	cfg     config.PlatformPublishConfig
 }
 
 // NewQimaoPlatform 创建七猫平台发布器。
-func NewQimaoPlatform(adapter *c1.QimaoPublishAdapter) *QimaoPlatform {
-	return &QimaoPlatform{adapter: adapter}
+func NewQimaoPlatform(adapter *c1.QimaoPublishAdapter, cfg config.PlatformPublishConfig) *QimaoPlatform {
+	return &QimaoPlatform{adapter: adapter, cfg: cfg}
 }
 
 func (p *QimaoPlatform) Platform() string {
@@ -33,6 +35,11 @@ func (p *QimaoPlatform) Platform() string {
 // SetManager 注入 AutoPublishManager 引用。
 func (p *QimaoPlatform) SetManager(mgr *AutoPublishManager) {
 	p.mgr = mgr
+}
+
+// PublishConfig 返回平台发布配置。
+func (p *QimaoPlatform) PublishConfig() config.PlatformPublishConfig {
+	return p.cfg
 }
 
 // Run 七猫自动发布主循环（4 阶段流水线）。
@@ -151,6 +158,24 @@ func (p *QimaoPlatform) Run(job *AutoPublishJob) {
 
 		log.Printf("[auto_publish] task=%s ===== 第%d章完成(qimao) =====", job.TaskID, staged.chapterNumber)
 		job.retryCount = 0
+
+		job.mu.Lock()
+		job.ChaptersThisBatch++
+		batchCount := job.ChaptersThisBatch
+		job.mu.Unlock()
+		if job.onChapterPublished != nil {
+			job.onChapterPublished(job)
+		}
+
+		if p.cfg.MaxChaptersPerBatch > 0 && batchCount >= p.cfg.MaxChaptersPerBatch {
+			log.Printf("[auto_publish] task=%s 本轮已完成%d章(qimao), 暂停并重新入队", job.TaskID, batchCount)
+			p.mgr.cleanupSessions(job)
+			if job.onExitRequeue != nil {
+				job.onExitRequeue(job, fmt.Errorf("batch limit: %w", ErrDailyLimitReached))
+			}
+			return
+		}
+
 		staged = nil
 		time.Sleep(2 * time.Second)
 	}
@@ -524,7 +549,7 @@ func (p *QimaoPlatform) setNewBookInfo(job *AutoPublishJob, cred, bookId, novelN
 		if bookOpt.PickedTagIds != "" {
 			tagIds = bookOpt.PickedTagIds
 		} else {
-			tagIds = p.adapter.PickTags(bookOpt)
+			tagIds = "1,28,47"
 		}
 	}
 

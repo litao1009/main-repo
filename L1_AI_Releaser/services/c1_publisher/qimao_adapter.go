@@ -237,16 +237,22 @@ func (a *QimaoPublishAdapter) CreateBook(ctx context.Context, credentials, novel
 		return a.fail(ErrCodeInputInvalid, "qimao: novelName is empty", "")
 	}
 
-	category1, category2 := a.pickCategory(bookOpt)
-	tagIds := a.PickTags(bookOpt)
-	if bookOpt != nil && bookOpt.Category1 != "" {
+	category1 := ""
+	category2 := ""
+	tagIds := ""
+	if bookOpt != nil {
 		category1 = bookOpt.Category1
-	}
-	if bookOpt != nil && bookOpt.Category2 != "" {
 		category2 = bookOpt.Category2
-	}
-	if bookOpt != nil && bookOpt.PickedTagIds != "" {
 		tagIds = bookOpt.PickedTagIds
+	}
+	if category1 == "" {
+		category1 = "301"
+	}
+	if category2 == "" {
+		category2 = "333"
+	}
+	if tagIds == "" {
+		tagIds = "1,28,47"
 	}
 
 	input := qimaoInput{
@@ -425,53 +431,7 @@ func (a *QimaoPublishAdapter) execAndParse(ctx context.Context, input qimaoInput
 	return output, nil
 }
 
-func (a *QimaoPublishAdapter) pickCategory(bookOpt *QimaoOutput) (string, string) {
-	if bookOpt != nil && len(bookOpt.CategoryList) > 0 {
-		for _, group := range bookOpt.CategoryList {
-			if len(group.Category) > 0 {
-				parent := group.Category[0]
-				c2 := ""
-				if len(parent.Children) > 0 {
-					c2 = parent.Children[0].ID
-				}
-				if parent.ID != "" && c2 != "" {
-					return parent.ID, c2
-				}
-			}
-		}
-	}
-	return "301", "333"
-}
 
-func (a *QimaoPublishAdapter) PickTags(bookOpt *QimaoOutput) string {
-	if bookOpt == nil || len(bookOpt.TagList) == 0 {
-		return "1,28,47"
-	}
-	var ids []string
-	for _, group := range bookOpt.TagList {
-		if len(group.SelectList) == 0 {
-			continue
-		}
-		count := group.CanChooseCount
-		if count == 0 {
-			count = 1
-		}
-		if count > len(group.SelectList) {
-			count = len(group.SelectList)
-		}
-		for i := 0; i < count; i++ {
-			id := group.SelectList[i].TagID
-			if id == "" {
-				id = group.SelectList[i].ID
-			}
-			ids = append(ids, id)
-		}
-	}
-	if len(ids) == 0 {
-		return "1,28,47"
-	}
-	return strings.Join(ids, ",")
-}
 
 // --- Puppeteer 执行 ---
 

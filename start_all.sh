@@ -1,27 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================
 #  全模块后端 + 前端服务启动脚本 (main-repo 版本)
-#  用法: sudo bash start_all.sh   (必须以 root 权限执行)
-#  要求: 在 main-repo 根目录下执行
+#  用法: bash start_all.sh
+#  要求: 以 admin 用户身份在 main-repo 根目录下执行
 # ============================================================
 set -euo pipefail
 
-# ========== 权限检查 & 自动提权 ==========
-if [ "$(id -u)" -ne 0 ]; then
-    echo "[WARN] 当前非 root 用户，正在尝试切换到 root..."
-    if command -v sudo &>/dev/null; then
-        exec sudo bash "$0" "$@"
-    else
-        echo "[FATAL] sudo 不可用且当前非 root，无法继续。请使用 root 用户执行此脚本。"
-        exit 1
-    fi
-fi
-
-# 确认已切换到 root
-if [ "$(id -u)" -ne 0 ]; then
-    echo "[FATAL] 无法获取 root 权限，退出。"
-    exit 1
-fi
+# ========== 运行时用户 ==========
+RUN_USER="admin"
 
 # ========== 路径常量（相对于脚本所在目录） ==========
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,33 +26,8 @@ MIGRATIONS_DIR="$SCRIPT_DIR/migrations"
 DATA_DIR="/tmp/sm_demo"
 LOG_DIR="/tmp/logs"
 
-# ========== 运行时用户检测 ==========
-RUN_USER="${RUN_USER:-}"
-if [ -z "$RUN_USER" ]; then
-    if id admin &>/dev/null; then
-        RUN_USER="admin"
-    else
-        # 找最近登录的非 root 用户
-        RUN_USER=$(last -1 | awk '{print $1}' | grep -v '^$' | grep -v '^root$' | head -1)
-        if [ -z "$RUN_USER" ]; then
-            RUN_USER=$(who am i 2>/dev/null | awk '{print $1}' | head -1)
-        fi
-        if [ -z "$RUN_USER" ] || [ "$RUN_USER" = "root" ]; then
-            RUN_USER="root"
-        fi
-    fi
-fi
-
-# 以指定用户身份执行命令（root 下直接切用户，非 root 下用 sudo）
-# -E 保留环境变量，确保 TEAM_DEEPSEEK_API_KEY 等能传递到子进程
 as_run_user() {
-    if [ "$(whoami)" = "$RUN_USER" ] || [ "$RUN_USER" = "root" ]; then
-        env "$@"
-    elif [ "$RUN_USER" != "root" ]; then
-        sudo -E -u "$RUN_USER" env "$@"
-    else
-        env "$@"
-    fi
+    env "$@"
 }
 
 # ========== 环境变量（可覆盖） ==========
@@ -135,17 +96,17 @@ ensure_opencode() {
         log "  npm 未安装，正在通过 $pkg_mgr 安装 Node.js..."
         case "$pkg_mgr" in
             apt)
-                apt-get update -qq && apt-get install -y -qq nodejs npm 2>/tmp/npm_install.log || {
+                sudo apt-get update -qq && sudo apt-get install -y -qq nodejs npm 2>/tmp/npm_install.log || {
                     fail "Node.js 安装失败"
                     cat /tmp/npm_install.log
                     return 1
                 }
                 ;;
             yum|dnf)
-                $pkg_mgr install -y nodejs npm 2>/tmp/npm_install.log || {
+                sudo $pkg_mgr install -y nodejs npm 2>/tmp/npm_install.log || {
                     # CentOS 7 可能需要 EPEL
-                    yum install -y epel-release 2>/dev/null || true
-                    $pkg_mgr install -y nodejs npm 2>/tmp/npm_install.log || {
+                    sudo yum install -y epel-release 2>/dev/null || true
+                    sudo $pkg_mgr install -y nodejs npm 2>/tmp/npm_install.log || {
                         fail "Node.js 安装失败"
                         cat /tmp/npm_install.log
                         return 1
@@ -163,7 +124,7 @@ ensure_opencode() {
 
     # 安装 opencode
     log "  安装 opencode..."
-    if npm install -g @anthropic/opencode 2>/tmp/opencode_install.log; then
+    if sudo npm install -g @anthropic/opencode 2>/tmp/opencode_install.log; then
         ok "opencode 安装成功 ($(opencode --version 2>/dev/null || echo 'ok'))"
         return 0
     else
@@ -184,16 +145,16 @@ ensure_mysql() {
         local pkg_mgr=$(detect_pkg_mgr)
         case "$pkg_mgr" in
             apt)
-                apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mysql-server mysql-client 2>/tmp/mysql_install.log || {
+                sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mysql-server mysql-client 2>/tmp/mysql_install.log || {
                     fail "MySQL 安装失败"
                     cat /tmp/mysql_install.log
                     return 1
                 }
                 ;;
             yum|dnf)
-                $pkg_mgr install -y mysql-server mysql 2>/tmp/mysql_install.log || {
+                sudo $pkg_mgr install -y mysql-server mysql 2>/tmp/mysql_install.log || {
                     # CentOS 7 可能需要 mariadb
-                    $pkg_mgr install -y mariadb-server mariadb 2>/tmp/mysql_install.log || {
+                    sudo $pkg_mgr install -y mariadb-server mariadb 2>/tmp/mysql_install.log || {
                         fail "MySQL 安装失败"
                         cat /tmp/mysql_install.log
                         return 1
@@ -211,18 +172,18 @@ ensure_mysql() {
 
     # 确保 MySQL 服务已启动
     if command -v systemctl &>/dev/null; then
-        if ! systemctl is-active --quiet mysqld 2>/dev/null && ! systemctl is-active --quiet mysql 2>/dev/null && ! systemctl is-active --quiet mariadb 2>/dev/null; then
+        if ! sudo systemctl is-active --quiet mysqld 2>/dev/null && ! sudo systemctl is-active --quiet mysql 2>/dev/null && ! sudo systemctl is-active --quiet mariadb 2>/dev/null; then
             log "  启动 MySQL 服务..."
-            systemctl start mysqld 2>/dev/null || systemctl start mysql 2>/dev/null || systemctl start mariadb 2>/dev/null || {
+            sudo systemctl start mysqld 2>/dev/null || sudo systemctl start mysql 2>/dev/null || sudo systemctl start mariadb 2>/dev/null || {
                 fail "无法启动 MySQL 服务"
                 return 1
             }
-            systemctl enable mysqld 2>/dev/null || systemctl enable mysql 2>/dev/null || systemctl enable mariadb 2>/dev/null || true
+            sudo systemctl enable mysqld 2>/dev/null || sudo systemctl enable mysql 2>/dev/null || sudo systemctl enable mariadb 2>/dev/null || true
         fi
         ok "MySQL 服务已启动"
     elif command -v service &>/dev/null; then
         if ! service mysqld status 2>/dev/null | grep -q "running"; then
-            service mysqld start 2>/dev/null || service mysql start 2>/dev/null || service mariadb start 2>/dev/null || true
+            sudo service mysqld start 2>/dev/null || sudo service mysql start 2>/dev/null || sudo service mariadb start 2>/dev/null || true
         fi
     fi
 
@@ -282,10 +243,10 @@ setup_mysql_auth() {
 cleanup_old() {
     log "清理旧进程..."
     for proc in run_bff.sh skill_registry ai_provider session_manager a1_server c2_dashboard workflow_engine scheduler bff-server; do
-        pkill -f "$proc" 2>/dev/null || true
+        sudo pkill -f "$proc" 2>/dev/null || true
     done
-    pkill -f "next dev" 2>/dev/null || true
-    rm -f /tmp/fe.log 2>/dev/null || true
+    sudo pkill -f "next dev" 2>/dev/null || true
+    sudo rm -f /tmp/fe.log 2>/dev/null || true
     sleep 2
 }
 
@@ -317,8 +278,8 @@ check_prereq() {
 
     # Go 版本检查
     if ! command -v go &>/dev/null; then
-        fail "Go 未安装 — 请安装 Go 1.21+"
-        exit 1
+        warn "Go 未安装 — 建议安装 Go 1.21+"
+        return
     fi
     local go_ver=$(go version 2>/dev/null | grep -oP 'go\K[0-9]+\.[0-9]+' | head -1)
     if [ -n "$go_ver" ]; then
@@ -378,8 +339,8 @@ setup_data() {
     log "准备沙箱配置..."
     mkdir -p "$DATA_DIR"
     mkdir -p "$LOG_DIR"
-    chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || true
-    chown -R "$RUN_USER:$RUN_USER" "$LOG_DIR" 2>/dev/null || true
+    sudo chown -R admin:admin "$DATA_DIR" 2>/dev/null || true
+    sudo chown -R admin:admin "$LOG_DIR" 2>/dev/null || true
 
     if [ ! -f "$DATA_DIR/opencode_config.json" ]; then
         cat > "$DATA_DIR/opencode_config.json" << 'CONFEOF'
@@ -537,8 +498,8 @@ start_ai_provider() {
 start_session_manager() {
     log "启动 Session Manager (:18080)..."
     cd "$SM_DIR"
-    chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" 2>/dev/null || true
-    as_run_user setsid ./session_manager \
+    sudo chown -R admin:admin "$DATA_DIR" 2>/dev/null || true
+    setsid ./session_manager \
         --port 18080 \
         --data-dir "$DATA_DIR" \
         --max-concurrent 2 \
@@ -561,7 +522,7 @@ start_session_manager() {
 start_a1_vault() {
     log "启动 A1 Account Vault (:8084)..."
     cd "$A1_DIR"
-    as_run_user \
+    env \
       A1_DB_DSN="$A1_DB_DSN" \
       A1_ENCRYPTION_KEY="$A1_ENCRYPTION_KEY" \
       A1_MOCK_ENCRYPTION_KEY="$A1_MOCK_ENCRYPTION_KEY" \
@@ -582,7 +543,7 @@ start_a1_vault() {
 start_workflow_engine() {
     log "启动 Workflow Engine (:9100)..."
     cd "$WF_DIR"
-    as_run_user setsid ./workflow_engine > /tmp/wf.log 2>&1 &
+    setsid ./workflow_engine > /tmp/wf.log 2>&1 &
     sleep 3
     if curl -s --max-time 3 http://127.0.0.1:9100/health > /dev/null 2>&1; then
         ok "Workflow Engine :9100"
@@ -598,7 +559,7 @@ start_workflow_engine() {
 start_dashboard() {
     log "启动 Dashboard (:8083)..."
     cd "$DB_DIR"
-    as_run_user setsid ./c2_dashboard > /tmp/c2.log 2>&1 &
+    setsid ./c2_dashboard > /tmp/c2.log 2>&1 &
     sleep 3
     if curl -s --max-time 3 http://127.0.0.1:8083/health > /dev/null 2>&1; then
         ok "Dashboard :8083"

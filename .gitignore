@@ -1,1 +1,17 @@
 .DS_Store
+
+# Compiled Go binaries (build on deploy, don't commit)
+L0_AI_Account_Secret_Vault/a1_server
+L1_AI_Dashboard/c2_dashboard
+L1_AI_Provider/ai_provider
+L1_novel_cover_png/novelcover_pure
+L1_skills_register/skill_registry
+L2_AI_Interval/scheduler
+L2_AI_Workflow_Engine/workflow_engine
+L2_conversion_manager/session_manager
+L3_AI_BFF/bff-server
+L3_AI_BFF/L3_AI_BFF
+
+# Novel shadow fixtures (data files, will grow large)
+L1_skills_register/fixtures/*-shadow
+L1_skills_register/fixtures/*-shadow/

@@ -162,6 +162,8 @@ export interface TaskSummary {
   auto_publish_error_message?: string | null
   /** queued 时有值，从 1 开始；否则为 -1 或缺省 */
   auto_publish_queue_position?: number
+  /** queued 时返回下次可调度时间(RFC3339)；running/stopped 时不返回 */
+  auto_publish_next_update_at?: string | null
   draft_version: number
   active_session_id?: string
 }

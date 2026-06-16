@@ -1,0 +1,12 @@
+{
+  "platforms": {
+    "fanqie": {
+      "max_chapters_per_batch": 0,
+      "requeue_interval_hours": 0
+    },
+    "qimao": {
+      "max_chapters_per_batch": 5,
+      "requeue_interval_hours": 8
+    }
+  }
+}

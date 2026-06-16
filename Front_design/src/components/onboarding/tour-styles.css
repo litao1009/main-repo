@@ -1,12 +1,13 @@
 /* driver.js — 铸文坊橙色主题 */
 
 .driver-active-element {
-  outline: 2px solid #fb923c !important;
-  outline-offset: 3px;
+  outline: none !important;
+  box-shadow: none !important;
 }
 
-.driver-overlay {
-  background: rgba(0, 0, 0, 0.5) !important;
+/* 勿给 .driver-overlay（SVG）设 background，否则会盖住镂空高亮区 */
+.driver-overlay path {
+  pointer-events: auto;
 }
 
 .driver-popover {

@@ -13,6 +13,9 @@ import { Loader2, AlertCircle, Eye, EyeOff, Minus, Plus, Settings2, UserPlus, Us
 import { cn } from "@/lib/utils"
 import { sanitizeUsernameInput, validateUsername, USERNAME_HINT, USERNAME_MAX_LEN } from "@/lib/username"
 
+/** 内测限制：管理员 + 普通用户合计最多 7 个 */
+const MAX_USERS = 7
+
 function formatLastLogin(v?: string) {
   if (!v) return null
   return <span title={formatDate(v)}>{formatRelativeTime(v)}</span>
@@ -103,6 +106,7 @@ export default function AdminUsersPage() {
   useEffect(() => { loadSlots() }, [loadSlots])
 
   const getInitials = (name: string) => name.slice(0, 2).toUpperCase()
+  const userLimitReached = total >= MAX_USERS
 
   return (
     <div className="max-w-7xl mx-auto px-6 pt-6">
@@ -114,9 +118,17 @@ export default function AdminUsersPage() {
           <p className="text-slate-500 mt-1">管理系统内的操作员账号及系统角色分配</p>
         </div>
         <button
-          onClick={() => setShowCreate(true)}
+          onClick={() => {
+            if (userLimitReached) {
+              toast.error(`最多只能添加 ${MAX_USERS} 个用户（含管理员与普通用户）`)
+              return
+            }
+            setShowCreate(true)
+          }}
+          disabled={userLimitReached}
           data-tour="admin-invite"
-          className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 shadow-sm transition-colors"
+          title={userLimitReached ? `已达 ${MAX_USERS} 人上限` : undefined}
+          className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 shadow-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-slate-900"
         >
           + 邀请新用户
         </button>
@@ -335,6 +347,7 @@ export default function AdminUsersPage() {
       {showCreate && (
         <CreateUserModal
           open
+          userLimitReached={userLimitReached}
           onClose={() => setShowCreate(false)}
           onCreated={() => {
             setShowCreate(false)
@@ -569,7 +582,17 @@ function UserModalFooter({
 }
 
 /* ── 新建用户弹窗 ── */
-function CreateUserModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
+function CreateUserModal({
+  open,
+  userLimitReached,
+  onClose,
+  onCreated,
+}: {
+  open: boolean
+  userLimitReached: boolean
+  onClose: () => void
+  onCreated: () => void
+}) {
   const [username, setUsername] = useState("")
   const [phone, setPhone] = useState("")
   const [password, setPassword] = useState("")
@@ -578,6 +601,10 @@ function CreateUserModal({ open, onClose, onCreated }: { open: boolean; onClose:
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (userLimitReached) {
+      toast.error(`最多只能添加 ${MAX_USERS} 个用户（含管理员与普通用户）`)
+      return
+    }
     const usernameError = validateUsername(username)
     if (usernameError) {
       toast.error(usernameError)

@@ -13,17 +13,19 @@ import (
 	"time"
 
 	c1 "clawstudios/l1_ai_releaser/services/c1_publisher"
+	"github.com/claw-studio/L3_AI_BFF/config"
 )
 
 // FanqiePlatform 番茄小说平台自动发布实现。
 type FanqiePlatform struct {
 	mgr     *AutoPublishManager
 	adapter *c1.FanqiePublishAdapter
+	cfg     config.PlatformPublishConfig
 }
 
 // NewFanqiePlatform 创建番茄平台发布器。
-func NewFanqiePlatform(adapter *c1.FanqiePublishAdapter) *FanqiePlatform {
-	return &FanqiePlatform{adapter: adapter}
+func NewFanqiePlatform(adapter *c1.FanqiePublishAdapter, cfg config.PlatformPublishConfig) *FanqiePlatform {
+	return &FanqiePlatform{adapter: adapter, cfg: cfg}
 }
 
 func (p *FanqiePlatform) Platform() string {
@@ -33,6 +35,11 @@ func (p *FanqiePlatform) Platform() string {
 // SetManager 注入 AutoPublishManager 引用，用于调用公共方法。
 func (p *FanqiePlatform) SetManager(mgr *AutoPublishManager) {
 	p.mgr = mgr
+}
+
+// PublishConfig 返回平台发布配置。
+func (p *FanqiePlatform) PublishConfig() config.PlatformPublishConfig {
+	return p.cfg
 }
 
 // Run 番茄自动发布主循环（从原 autoPublishLoop 搬迁）。
@@ -488,23 +495,47 @@ func (p *FanqiePlatform) phasePrepare(job *AutoPublishJob) *chapterGenState {
 		state.draftItemID = existingDraft.ItemID
 		state.fullTitle = existingDraft.Title
 		state.chapterTitle = existingDraft.Title
+
+		sessions, err := p.mgr.fetchSessions(taskID)
+		if err != nil {
+			log.Printf("[auto_publish] task=%s phasePrepare 获取sessions失败: %v", taskID, err)
+		} else {
+			for i := len(sessions) - 1; i >= 0; i-- {
+				s := sessions[i]
+				volName := s.VolumeName
+				if volName == "" {
+					volName = "第一卷"
+				}
+				if s.ChapterNumber == nextChapter && volName == nextVolume {
+					draft, _, draftErr := p.mgr.getDraft(s.SessionID)
+					if draftErr != nil {
+						log.Printf("[auto_publish] task=%s phasePrepare 获取session=%s草稿失败: %v", taskID, s.SessionID, draftErr)
+						continue
+					}
+					state.draft = draft
+					log.Printf("[auto_publish] task=%s phasePrepare 从session=%s加载草稿 chapter=%d contentLen=%d", taskID, s.SessionID, nextChapter, len(draft))
+					break
+				}
+			}
+		}
 	}
 	return state
 }
 
-// phaseSaveDraft 番茄存草稿（API优先，Puppeteer兜底）。
+// phaseSaveDraft 番茄存草稿。
 func (p *FanqiePlatform) phaseSaveDraft(job *AutoPublishJob, state *chapterGenState) error {
 	taskID := job.TaskID
 	log.Printf("[auto_publish] task=%s 存草稿 title=%s chapter=%d", taskID, state.fullTitle, state.chapterNumber)
 
+	if len([]rune(state.chapterTitle)) == 1 {
+		state.chapterTitle = state.chapterTitle + "呢呀"
+		state.fullTitle = fmt.Sprintf("第%d章 %s", state.chapterNumber, state.chapterTitle)
+		log.Printf("[auto_publish] task=%s 标题容错: 原标题长度=1, 追加为 %s", taskID, state.chapterTitle)
+	}
+
 	saveResult := p.adapter.SaveDraftViaPageAPI(job.stopCtx, state.fullTitle, state.draft, job.NovelName, state.chapterNumber, state.cred, job.WorkID, state.apiVolumeName, state.volumeId)
 	if saveResult.Status != "ok" {
-		log.Printf("[auto_publish] task=%s API存草稿失败: %s (code=%s), 回退Puppeteer", taskID, saveResult.ErrorMessage, saveResult.ErrorCode)
-		saveResult = p.adapter.SaveDraft(job.stopCtx, state.chapterTitle, state.draft, job.NovelName, state.chapterNumber, state.cred, job.WorkID)
-		if saveResult.Status != "ok" {
-			return fmt.Errorf("save draft: %s (code=%s)", saveResult.ErrorMessage, saveResult.ErrorCode)
-		}
-		log.Printf("[auto_publish] task=%s Puppeteer兜底存草稿成功", taskID)
+		return fmt.Errorf("save draft: %s (code=%s)", saveResult.ErrorMessage, saveResult.ErrorCode)
 	}
 
 	state.draftItemID = saveResult.DraftItemID
@@ -512,7 +543,7 @@ func (p *FanqiePlatform) phaseSaveDraft(job *AutoPublishJob, state *chapterGenSt
 	return nil
 }
 
-// phasePublishDraft 番茄从草稿箱发布（API优先，Puppeteer兜底）。
+// phasePublishDraft 番茄从草稿箱发布。
 func (p *FanqiePlatform) phasePublishDraft(job *AutoPublishJob, state *chapterGenState) error {
 	taskID := job.TaskID
 	log.Printf("[auto_publish] task=%s 发布章节 title=%s chapter=%d", taskID, state.fullTitle, state.chapterNumber)
@@ -537,15 +568,7 @@ func (p *FanqiePlatform) phasePublishDraft(job *AutoPublishJob, state *chapterGe
 		if pubResult.ErrorCode == c1.ErrCodeDailyLimit {
 			return fmt.Errorf("publish daily limit: %w", ErrDailyLimitReached)
 		}
-		log.Printf("[auto_publish] task=%s API发布失败: %s, 回退Puppeteer", taskID, pubResult.ErrorMessage)
-		pubResult = p.adapter.PublishDraft(job.stopCtx, state.chapterTitle, job.NovelName, state.volume, state.cred, job.WorkID, draftItemID)
-		if pubResult.Status != "ok" {
-			if pubResult.ErrorCode == c1.ErrCodeDailyLimit {
-				return fmt.Errorf("publish daily limit: %w", ErrDailyLimitReached)
-			}
-			return fmt.Errorf("publish draft: %s (code=%s)", pubResult.ErrorMessage, pubResult.ErrorCode)
-		}
-		log.Printf("[auto_publish] task=%s Puppeteer兜底发布成功", taskID)
+		return fmt.Errorf("publish draft: %s (code=%s)", pubResult.ErrorMessage, pubResult.ErrorCode)
 	}
 
 	log.Printf("[auto_publish] task=%s 发布成功: title=%s postId=%s", taskID, state.fullTitle, pubResult.PostID)

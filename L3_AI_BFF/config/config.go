@@ -1,8 +1,15 @@
 package config
 
 import (
+	"encoding/json"
+	"log"
 	"os"
 )
+
+type PlatformPublishConfig struct {
+	MaxChaptersPerBatch  int `json:"max_chapters_per_batch"`
+	RequeueIntervalHours int `json:"requeue_interval_hours"`
+}
 
 type Config struct {
 	Port              string
@@ -19,6 +26,7 @@ type Config struct {
 	QimaoScript       string
 	A1BaseURL         string
 	DB_DSN            string
+	PlatformConfigFile string
 }
 
 func Load() *Config {
@@ -36,12 +44,42 @@ func Load() *Config {
 		QimaoScript:       getEnv("QIMAO_SCRIPT", "../L1_AI_Releaser/scripts/publish_qimao.js"),
 		A1BaseURL:         getEnv("A1_BASE_URL", "http://localhost:8084"),
 		DB_DSN:            getEnv("DB_DSN", "user:password@tcp(127.0.0.1:3306)/claw_studios?parseTime=true&charset=utf8mb4"),
+		PlatformConfigFile: getEnv("PLATFORM_PUBLISH_CONFIG", "config/platform_publish.json"),
 		ModelList: map[string]bool{
 			"deepseek-chat":     true,
 			"deepseek-reasoner": true,
 			"hy3-preview":       true,
 		},
 	}
+}
+
+func LoadPlatformConfig(filePath string) map[string]PlatformPublishConfig {
+	defaults := map[string]PlatformPublishConfig{
+		"fanqie": {MaxChaptersPerBatch: 0, RequeueIntervalHours: 24},
+		"qimao":  {MaxChaptersPerBatch: 5, RequeueIntervalHours: 1},
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		log.Fatalf("[config] 无法读取平台发布配置文件 %s: %v", filePath, err)
+	}
+
+	var raw struct {
+		Platforms map[string]PlatformPublishConfig `json:"platforms"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		log.Fatalf("[config] 解析平台发布配置文件 %s 失败: %v", filePath, err)
+	}
+
+	result := make(map[string]PlatformPublishConfig)
+	for k, v := range defaults {
+		result[k] = v
+	}
+	for k, v := range raw.Platforms {
+		result[k] = v
+	}
+
+	return result
 }
 
 func getEnv(key, fallback string) string {

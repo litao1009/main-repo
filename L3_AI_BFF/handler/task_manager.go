@@ -11,6 +11,7 @@ import (
 
 	c1 "clawstudios/l1_ai_releaser/services/c1_publisher"
 
+	"github.com/claw-studio/L3_AI_BFF/config"
 	"github.com/claw-studio/L3_AI_BFF/model"
 	"github.com/claw-studio/L3_AI_BFF/pkg/idgen"
 	"github.com/gin-gonic/gin"
@@ -31,27 +32,30 @@ type TaskManager struct {
 }
 
 type autoPublishTaskRow struct {
-	TaskID        string
-	UserID        string
-	AccountIDs    string
-	Platform      string
-	WorkID        string
-	SkillID       string
-	Topic         string
-	NovelName     string
-	VolumeName    string
-	ChapterNumber  int
-	BookInfoSet    bool
-	Status         string
-	RecoverableAt  time.Time
+	TaskID            string
+	UserID            string
+	AccountIDs        string
+	Platform          string
+	WorkID            string
+	SkillID           string
+	Topic             string
+	NovelName         string
+	VolumeName        string
+	ChapterNumber     int
+	ChaptersThisBatch int
+	BookInfoSet       bool
+	Status            string
+	RecoverableAt     time.Time
 }
 
-func NewTaskManager(db *sql.DB, sessionMgrURL, workflowURL, accountURL, skillRegistryURL, a1BaseURL string, fanqieAdapter *c1.FanqiePublishAdapter, qimaoAdapter *c1.QimaoPublishAdapter, maxSlots int) *TaskManager {
+func NewTaskManager(db *sql.DB, sessionMgrURL, workflowURL, accountURL, skillRegistryURL, a1BaseURL string, fanqieAdapter *c1.FanqiePublishAdapter, qimaoAdapter *c1.QimaoPublishAdapter, platformCfgs map[string]config.PlatformPublishConfig, maxSlots int) *TaskManager {
 	if maxSlots < 1 {
 		maxSlots = 2
 	}
-	fanqiePlatform := NewFanqiePlatform(fanqieAdapter)
-	qimaoPlatform := NewQimaoPlatform(qimaoAdapter)
+	fanqieCfg := platformCfgs["fanqie"]
+	qimaoCfg := platformCfgs["qimao"]
+	fanqiePlatform := NewFanqiePlatform(fanqieAdapter, fanqieCfg)
+	qimaoPlatform := NewQimaoPlatform(qimaoAdapter, qimaoCfg)
 	platforms := map[string]NovelPlatform{
 		"fanqie": fanqiePlatform,
 		"qimao":  qimaoPlatform,
@@ -171,7 +175,7 @@ func (tm *TaskManager) tryDispatch() {
 
 	row := tm.db.QueryRow(`
 		SELECT task_id, user_id, account_ids, platform, work_id, skill_id, topic, novel_name,
-			   volume_name, chapter_number, book_info_set, recoverable_at
+			   volume_name, chapter_number, chapters_this_batch, book_info_set, recoverable_at
 		FROM auto_publish_task
 		WHERE status = 'queued'
 		ORDER BY entry_time ASC
@@ -180,7 +184,7 @@ func (tm *TaskManager) tryDispatch() {
 
 	var t autoPublishTaskRow
 	err := row.Scan(&t.TaskID, &t.UserID, &t.AccountIDs, &t.Platform, &t.WorkID, &t.SkillID,
-		&t.Topic, &t.NovelName, &t.VolumeName, &t.ChapterNumber, &t.BookInfoSet, &t.RecoverableAt)
+		&t.Topic, &t.NovelName, &t.VolumeName, &t.ChapterNumber, &t.ChaptersThisBatch, &t.BookInfoSet, &t.RecoverableAt)
 	if err == sql.ErrNoRows {
 		now := time.Now()
 		if now.Sub(tm.lastNoTaskLog) > 30*time.Second {
@@ -228,29 +232,36 @@ func (tm *TaskManager) buildJob(t *autoPublishTaskRow) *AutoPublishJob {
 	}
 
 	job := &AutoPublishJob{
-		TaskID:        t.TaskID,
-		UserID:        t.UserID,
-		Platform:      t.Platform,
-		Accounts:      accounts,
-		SkillID:       t.SkillID,
-		Topic:         t.Topic,
-		NovelName:     t.NovelName,
-		VolumeName:    t.VolumeName,
-		ChapterNumber: t.ChapterNumber,
-		Status:        "running",
-		WorkID:        t.WorkID,
-		stopCtx:       stopCtx,
-		stopCancel:    stopCancel,
-		finishCh:      make(chan struct{}, 1),
-		createdAt:     time.Now(),
-		BookInfoSet:   t.BookInfoSet,
-		retryCount:    0,
+		TaskID:            t.TaskID,
+		UserID:            t.UserID,
+		Platform:          t.Platform,
+		Accounts:          accounts,
+		SkillID:           t.SkillID,
+		Topic:             t.Topic,
+		NovelName:         t.NovelName,
+		VolumeName:        t.VolumeName,
+		ChapterNumber:     t.ChapterNumber,
+		ChaptersThisBatch: t.ChaptersThisBatch,
+		Status:            "running",
+		WorkID:            t.WorkID,
+		stopCtx:           stopCtx,
+		stopCancel:        stopCancel,
+		finishCh:          make(chan struct{}, 1),
+		createdAt:         time.Now(),
+		BookInfoSet:       t.BookInfoSet,
+		retryCount:        0,
 	}
 	job.onExit = func(j *AutoPublishJob, newStatus string) {
 		tm.exitLoop(j, newStatus)
 	}
 	job.onExitRequeue = func(j *AutoPublishJob, err error) {
 		tm.exitLoopAndRequeue(j, err)
+	}
+	job.onChapterPublished = func(j *AutoPublishJob) {
+		j.mu.Lock()
+		count := j.ChaptersThisBatch
+		j.mu.Unlock()
+		tm.db.Exec(`UPDATE auto_publish_task SET chapters_this_batch=? WHERE task_id=?`, count, j.TaskID)
 	}
 	return job
 }
@@ -268,7 +279,13 @@ type contextInterface interface {
 
 func (tm *TaskManager) exitLoopAndRequeue(job *AutoPublishJob, err error) {
 	now := time.Now()
-	recoverableAt := now.Add(24 * time.Hour)
+	interval := 24 * time.Hour
+	if p, ok := tm.platforms[job.Platform]; ok {
+		if h := p.PublishConfig().RequeueIntervalHours; h > 0 {
+			interval = time.Duration(h) * time.Hour
+		}
+	}
+	recoverableAt := now.Add(interval)
 
 	job.mu.Lock()
 	chapterNumber := job.ChapterNumber
@@ -282,6 +299,7 @@ func (tm *TaskManager) exitLoopAndRequeue(job *AutoPublishJob, err error) {
 			last_executed_at=?,
 			recoverable_at=?,
 			chapter_number=?,
+			chapters_this_batch=0,
 			error_message=?,
 			updated_at=UTC_TIMESTAMP()
 		WHERE task_id=?
@@ -498,7 +516,7 @@ func (tm *TaskManager) GetTaskStatusHandler() gin.HandlerFunc {
 		if recoverableAt.Valid {
 			data["recoverable_at"] = recoverableAt.Time.Format(time.RFC3339)
 		}
-		if errorMessage.Valid && errorMessage.String != "publish daily limit: daily_limit_reached" {
+		if errorMessage.Valid && errorMessage.String != "publish daily limit: daily_limit_reached" && errorMessage.String != "batch limit: daily_limit_reached" {
 			data["auto_publish_error_message"] = errorMessage.String
 		}
 

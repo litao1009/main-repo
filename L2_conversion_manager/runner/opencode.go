@@ -84,6 +84,7 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 			"--format", "json",
 			"--thinking",
 			"--model", opts.Model,
+			"--dir", opts.CWD,
 		}
 		if opts.SessionID != "" {
 			args = append(args, "--session", opts.SessionID)

@@ -23,6 +23,8 @@ import (
 func main() {
 	cfg := config.Load()
 
+	platformCfgs := config.LoadPlatformConfig(cfg.PlatformConfigFile)
+
 	middleware.InitJWT(cfg.JWTSecret)
 
 	var db *sql.DB
@@ -44,17 +46,20 @@ func main() {
 		}
 	}
 
+	fanqieCfg := platformCfgs["fanqie"]
+	qimaoCfg := platformCfgs["qimao"]
+
 	fanqieAdapter := c1.NewFanqiePublishAdapter(c1.AdapterConfig{
 		ScriptPath: cfg.FanqieScript,
 		Timeout:    600 * time.Second,
 	})
-	fanqiePlatform := handler.NewFanqiePlatform(fanqieAdapter)
+	fanqiePlatform := handler.NewFanqiePlatform(fanqieAdapter, fanqieCfg)
 
 	qimaoAdapter := c1.NewQimaoPublishAdapter(c1.AdapterConfig{
 		ScriptPath: cfg.QimaoScript,
 		Timeout:    600 * time.Second,
 	})
-	qimaoPlatform := handler.NewQimaoPlatform(qimaoAdapter)
+	qimaoPlatform := handler.NewQimaoPlatform(qimaoAdapter, qimaoCfg)
 
 	platforms := map[string]handler.NovelPlatform{
 		"fanqie": fanqiePlatform,
@@ -68,7 +73,7 @@ func main() {
 	var taskMgr *handler.TaskManager
 	if db != nil {
 		taskMgr = handler.NewTaskManager(db, cfg.SessionMgrURL, cfg.WorkflowURL,
-			cfg.A1AccountURL, cfg.SkillRegistryURL, cfg.A1BaseURL, fanqieAdapter, qimaoAdapter, 2)
+			cfg.A1AccountURL, cfg.SkillRegistryURL, cfg.A1BaseURL, fanqieAdapter, qimaoAdapter, platformCfgs, 2)
 		if err := taskMgr.RecoverFromMySQL(); err != nil {
 			log.Printf("TaskManager 恢复失败: %v", err)
 		}

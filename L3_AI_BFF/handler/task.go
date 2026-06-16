@@ -353,14 +353,18 @@ func enrichTasksWithAutoPublish(tasksJSON []byte, taskMgr *TaskManager) []byte {
 	for rows.Next() {
 		var tid, status string
 		var entryTime time.Time
+		var recoverableAt time.Time
 		var errMsg sql.NullString
-		if scanErr := rows.Scan(&tid, &status, &entryTime, &errMsg); scanErr != nil {
+		if scanErr := rows.Scan(&tid, &status, &entryTime, &recoverableAt, &errMsg); scanErr != nil {
 			continue
 		}
 		if idx, ok := taskIndex[tid]; ok {
 			resp.Tasks[idx]["auto_publish_status"] = status
 			resp.Tasks[idx]["auto_publish_entry_time"] = entryTime.Format(time.RFC3339)
-			if errMsg.Valid && errMsg.String != "publish daily limit: daily_limit_reached" {
+			if status == "queued" {
+				resp.Tasks[idx]["auto_publish_next_update_at"] = recoverableAt.Format(time.RFC3339)
+			}
+			if errMsg.Valid && errMsg.String != "publish daily limit: daily_limit_reached" && errMsg.String != "batch limit: daily_limit_reached" {
 				resp.Tasks[idx]["auto_publish_error_message"] = errMsg.String
 			}
 		}
@@ -488,7 +492,7 @@ func sqlxIn(ids []string) (string, []interface{}, error) {
 		placeholders[i] = "?"
 		args[i] = id
 	}
-	query := fmt.Sprintf("SELECT task_id, status, entry_time, error_message FROM auto_publish_task WHERE task_id IN (%s)", strings.Join(placeholders, ","))
+	query := fmt.Sprintf("SELECT task_id, status, entry_time, recoverable_at, error_message FROM auto_publish_task WHERE task_id IN (%s)", strings.Join(placeholders, ","))
 	return query, args, nil
 }
 

@@ -42,8 +42,8 @@ const BIND_PLATFORM_OPTIONS = [
 
 const PROFILE_PLATFORMS = new Set<string>(['fanqie', 'zhulang', 'qimao'])
 
-/** 本版本临时限制：每个平台最多绑定账号数（后续版本可放开） */
-const MAX_ACCOUNTS_PER_PLATFORM = 4
+/** 本版本限制：每个平台最多绑定 1 个账号 */
+const MAX_ACCOUNTS_PER_PLATFORM = 1
 
 function countPlatformAccounts(accounts: AccountSummary[], plt: string): number {
   return accounts.filter((a) => a.platform === plt).length
@@ -55,7 +55,9 @@ function isPlatformAccountLimitReached(accounts: AccountSummary[], plt: string):
 
 function platformAccountLimitMessage(plt: string): string {
   const label = PLATFORM_LABELS[plt] || plt
-  return `${label}最多绑定 ${MAX_ACCOUNTS_PER_PLATFORM} 个账号`
+  return MAX_ACCOUNTS_PER_PLATFORM === 1
+    ? `${label}已绑定账号，每个平台只能绑定 1 个`
+    : `${label}最多绑定 ${MAX_ACCOUNTS_PER_PLATFORM} 个账号`
 }
 
 /** 支持 Cookie 注入并打开作家后台的平台 */
@@ -112,6 +114,9 @@ function mergeProfileIntoAccount(acc: AccountSummary, profile: SyncProfileRespon
   }
 }
 
+const GO_VERIFY_BTN_CLASS =
+  'inline-flex shrink-0 rounded-md px-2 py-0.5 text-[10px] font-semibold leading-none border bg-rose-600 text-white border-rose-600 shadow-sm shadow-rose-500/20 hover:bg-rose-700 hover:border-rose-700 cursor-pointer transition-colors'
+
 /** 番茄「已实名」点击展开的脱敏信息浮层；未实名时番茄/七猫可跳转平台实名页 */
 function AuthIdentityBadge({
   acc,
@@ -160,11 +165,7 @@ function AuthIdentityBadge({
         disabled={verifyDisabled}
         onClick={() => onGoVerify!(acc)}
         {...(verifyTourAnchor ? { "data-tour": "accounts-verify" } : {})}
-        className={`inline-flex shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors border ${
-          verifyDisabled
-            ? 'bg-sky-50/70 text-sky-400 border-sky-100 cursor-not-allowed'
-            : 'bg-sky-50 text-sky-700 border-sky-200/80 hover:bg-sky-100 hover:border-sky-300 cursor-pointer'
-        }`}
+        className={`${GO_VERIFY_BTN_CLASS}${verifyDisabled ? ' opacity-50 cursor-not-allowed hover:bg-rose-600 hover:border-rose-600' : ''}`}
         title={verifyTitle}
       >
         去实名
@@ -278,7 +279,7 @@ export default function AccountsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [showBindModal, setShowBindModal] = useState(false)
-  const [platform, setPlatform] = useState("fanqie")
+  const [platform, setPlatform] = useState("")
   const [displayName, setDisplayName] = useState("")
   const [credentials, setCredentials] = useState("")
   const [binding, setBinding] = useState(false)
@@ -460,7 +461,7 @@ export default function AccountsPage() {
   useEffect(() => {
     if (!showBindModal) {
       resetCaptureState()
-      setPlatform("fanqie")
+      setPlatform("")
       setCredentials("")
       setDisplayName("")
       setBindDialogError(null)
@@ -487,6 +488,10 @@ export default function AccountsPage() {
 
   const handleAutoCapture = (context: 'bind' | 'relogin' = 'bind') => {
     const capturePlatform = resolveCapturePlatform(context)
+    if (context === 'bind' && !capturePlatform) {
+      toast.error('请先选择要绑定的平台')
+      return
+    }
     if (context === 'bind' && isPlatformAccountLimitReached(accounts, capturePlatform)) {
       toast.error(platformAccountLimitMessage(capturePlatform))
       return
@@ -503,6 +508,10 @@ export default function AccountsPage() {
 
   const handleBind = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!platform) {
+      setBindDialogError('请先选择要绑定的平台')
+      return
+    }
     if (!credentials.trim()) return
     if (isPlatformAccountLimitReached(accounts, platform)) {
       setBindDialogError(platformAccountLimitMessage(platform))
@@ -828,7 +837,7 @@ export default function AccountsPage() {
                               <AuthIdentityBadge
                                 acc={acc}
                                 onGoVerify={handleGoVerifyIdentity}
-                                verifyDisabled={isExpired || isChecking || !!injectStatusMap[acc.account_id]}
+                                verifyDisabled={isExpired || !!injectStatusMap[acc.account_id]}
                                 verifyTourAnchor={acc.account_id === tourVerifyAccountId}
                               />
                             </div>
@@ -930,14 +939,17 @@ export default function AccountsPage() {
                   )
                 })}
               </div>
-              <p className="mt-2.5 text-xs text-slate-400 text-center">
-                每个平台最多绑定 {MAX_ACCOUNTS_PER_PLATFORM} 个账号 · 选中平台后点击下方按钮，将在新窗口打开登录页
+              <p className="mt-2.5 min-h-[2.75rem] flex items-center justify-center text-xs text-center leading-snug px-1">
+                {platform && bindPlatformAtLimit ? (
+                  <span className="text-amber-600">
+                    {platformAccountLimitMessage(platform)}，请先解绑后再添加
+                  </span>
+                ) : (
+                  <span className="text-slate-400">
+                    每个平台只能绑定 1 个账号 · 选中平台后点击下方按钮，将在新窗口打开登录页
+                  </span>
+                )}
               </p>
-              {bindPlatformAtLimit ? (
-                <p className="mt-2 text-xs text-amber-600 text-center">
-                  {platformAccountLimitMessage(platform)}，请先解绑后再添加
-                </p>
-              ) : null}
             </div>
 
             {/* 前往登录 / 已完成 */}
@@ -978,7 +990,7 @@ export default function AccountsPage() {
                   <button
                     type="button"
                     onClick={() => handleAutoCapture('bind')}
-                    disabled={bindPlatformAtLimit || captureStatus === 'running' || captureStatus === 'author_pending'}
+                    disabled={!platform || bindPlatformAtLimit || captureStatus === 'running' || captureStatus === 'author_pending'}
                     className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
                   >
                     {captureStatus === 'running' || captureStatus === 'author_pending'
@@ -1092,7 +1104,7 @@ export default function AccountsPage() {
                 </p>
               )}
               <Button type="button" variant="ghost" onClick={() => setShowBindModal(false)}>取消</Button>
-              <Button type="submit" disabled={binding || !credentials.trim() || bindPlatformAtLimit}>
+              <Button type="submit" disabled={binding || !platform || !credentials.trim() || bindPlatformAtLimit}>
                 {binding ? <><Loader2 className="w-4 h-4 animate-spin" />提交中...</> : "完成"}
               </Button>
             </DialogFooter>

@@ -279,62 +279,90 @@ async function doGetBookList(cookieStr, input) {
 
 // ======================== Action: get_book_option ========================
 
-function pickOption(categoryList) {
-    let cat1 = '301', cat2 = '333';
-    for (const group of (categoryList || [])) {
-        const cats = group.category || [];
-        if (cats.length === 0) continue;
-        const parent = cats[0];
-        const children = parent.children || [];
-        if (parent.id && children.length > 0) {
-            cat1 = String(parent.id);
-            cat2 = String(children[0].id);
-            break;
-        }
-    }
-    const tags = [];
-    const seenTypes = new Set();
-    for (const group of (categoryList || [])) {
-        const tagInfos = group.tag_info || [];
-        for (const ti of tagInfos) {
-            if (seenTypes.has(ti.type_id)) continue;
-            seenTypes.add(ti.type_id);
-            const list = ti.select_list || [];
-            if (list.length === 0) continue;
-            let count = ti.can_choose_count;
-            if (!count || count <= 0) count = 1;
-            if (count > list.length) count = list.length;
-            const shuffled = [...list].sort(() => Math.random() - 0.5);
-            for (let i = 0; i < count; i++) {
-                tags.push(String(shuffled[i].tag_id || shuffled[i].id));
-            }
-        }
-    }
-    const tagIds = tags.length > 0 ? tags.join(',') : '1,28,47';
-    return { cat1, cat2, tagIds };
-}
-
 async function doGetBookOption(cookieStr, input) {
     log('info', 'get_book_option starting');
     const browser = await launchBrowser(); let page;
     try {
         page = await browser.newPage(); await page.setViewport(CONFIG.VIEWPORT);
+
+        // 监听页面原生请求，也尝试直接用 page.goto 获取
+        let responseBody = null;
+        const onResponse = async (response) => {
+            if (response.url().includes('/book/book-option') && !responseBody) {
+                try { responseBody = await response.text(); } catch (_) {}
+            }
+        };
+        page.on('response', onResponse);
+
         await loginAndNavigate(page, cookieStr);
 
-        const url = CONFIG.BASE_URL + '/api/pc/v1/book/book-option';
-        const result = await browserFetch(page, url, { method: 'GET' });
-        log('info', 'book-option API response', { status: result.status });
+        // 方式1: page.goto 直调 API，作为浏览器导航请求，headers 完整
+        const t = Date.now();
+        const apiUrl = CONFIG.BASE_URL + '/api/pc/v1/book/book-option?client_id=1&t=' + t;
+        try {
+            const gotoResp = await page.goto(apiUrl, { waitUntil: 'networkidle0', timeout: 15000 });
+            if (!responseBody && gotoResp) {
+                try { responseBody = await gotoResp.text(); } catch (_) {}
+            }
+        } catch (_) {}
 
-        const categoryList = (result.json && result.json.data && result.json.data.category_list) ? result.json.data.category_list : [];
-        const picked = pickOption(categoryList);
-        log('info', 'book-option picked', { categories: categoryList.length, cat1: picked.cat1, cat2: picked.cat2, tagCount: picked.tagIds.split(',').length });
+        // 方式2: 如果方式1没拿到，等页面 JS 自己发起
+        if (!responseBody) {
+            for (let i = 0; i < 10; i++) {
+                await new Promise(r => setTimeout(r, 500));
+            }
+        }
+        page.off('response', onResponse);
 
+        if (!responseBody) {
+            log('warn', 'book-option response not intercepted, using fallback');
+            return { success: true, action: 'get_book_option', category1: '301', category2: '333', pickedTagIds: '1,28,47' };
+        }
+
+        const data = JSON.parse(responseBody);
+        const categoryList = (data && data.data && data.data.category_list) ? data.data.category_list : [];
+        log('info', 'book-option intercepted', { textLen: responseBody.length, groupCount: categoryList.length });
+
+        let cat1 = '301', cat2 = '333';
+        for (const group of categoryList) {
+            const cats = group.category || [];
+            if (cats.length === 0) continue;
+            const parent = cats[0];
+            const children = parent.children || [];
+            if (parent.id && children.length > 0) {
+                cat1 = String(parent.id);
+                cat2 = String(children[0].id);
+                break;
+            }
+        }
+
+        const tags = [];
+        const seenTypes = new Set();
+        for (const group of categoryList) {
+            const tagInfos = group.tag_info || [];
+            for (const ti of tagInfos) {
+                if (seenTypes.has(ti.type_id)) continue;
+                seenTypes.add(ti.type_id);
+                const list = ti.select_list || [];
+                if (list.length === 0) continue;
+                let count = ti.can_choose_count;
+                if (!count || count <= 0) count = 1;
+                if (count > list.length) count = list.length;
+                const shuffled = [...list].sort(() => Math.random() - 0.5);
+                for (let i = 0; i < count; i++) {
+                    tags.push(String(shuffled[i].tag_id || shuffled[i].id));
+                }
+            }
+        }
+        const tagIds = tags.length > 0 ? tags.join(',') : '1,28,47';
+
+        log('info', 'book-option picked', { cat1, cat2, tagCount: tags.length });
         return {
             success: true,
             action: 'get_book_option',
-            category1: picked.cat1,
-            category2: picked.cat2,
-            pickedTagIds: picked.tagIds,
+            category1: cat1,
+            category2: cat2,
+            pickedTagIds: tagIds,
         };
     } finally { await browser.close().catch(() => {}); _globalBrowser = null; log('info', 'browser closed'); }
 }
