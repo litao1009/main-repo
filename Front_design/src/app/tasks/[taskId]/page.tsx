@@ -14,6 +14,7 @@ import { getPlatformLabel } from "@/lib/platform-label"
 import {
   AutoPublishHeaderStatus,
   AutoPublishRunToggle,
+  getAutoPublishErrorMessage,
 } from "@/lib/auto-publish-status"
 import type { AutoPublishTaskStatusData } from "@/types"
 import {
@@ -301,6 +302,10 @@ async function fetchTaskMessagesWithRetry(
     await sleep(intervalMs)
   }
   return { messages: last, hasReply: turnHasReply(last, baselineCount) }
+}
+
+function HeaderMetaDivider() {
+  return <span className="mx-0.5 h-4 w-px shrink-0 self-center bg-slate-200/90" aria-hidden />
 }
 
 export default function SessionPage() {
@@ -1034,11 +1039,6 @@ export default function SessionPage() {
     }
   }, [platform, lockedAccountId])
 
-  const publishHeaderMeta = useMemo(() => {
-    if (!platform || !lockedAccountId || !publishAccountDisplay) return null
-    return `${getPlatformLabel(platform)} · ${publishAccountDisplay}`
-  }, [platform, lockedAccountId, publishAccountDisplay])
-
   const headerChapterTitle = useMemo(
     () =>
       resolveHeaderChapterTitle(
@@ -1253,42 +1253,64 @@ export default function SessionPage() {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend() }
   }
 
+  const autoPublishErrorMessage = getAutoPublishErrorMessage(autoPublishStatus ?? {})
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-slate-50">
 
-      {/* ── 顶部 Header ── */}
-      <header className="min-h-14 py-2 bg-white border-b border-slate-200 flex items-center justify-between px-4 gap-3 shrink-0 z-20 shadow-sm">
-        <div className="flex items-center gap-2 min-w-0 flex-1">
+      {/* ── 顶部 Header（单行：书名 · 平台 · 作者 · 状态）── */}
+      <header className="flex h-14 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 shrink-0 z-20 shadow-sm">
+        <div className="flex min-h-0 min-w-0 flex-1 items-center gap-2">
           <button
             onClick={returnToTaskList}
-            className="p-2 text-slate-400 hover:text-slate-700 transition-colors rounded-lg hover:bg-slate-100 shrink-0"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
             aria-label="返回任务列表"
           >
             <ArrowLeft size={18} />
           </button>
-          <div className="flex flex-col min-w-0 flex-1">
-            <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-wrap">
-              <h1 className="text-lg font-bold text-slate-900 truncate leading-tight tracking-tight min-w-0">
-                {novelName || "未命名作品"}
-              </h1>
-              {publishHeaderMeta ? (
-                <span
-                  className="text-sm font-medium text-slate-500 truncate max-w-[min(40vw,12rem)] sm:max-w-xs shrink-0"
-                  title={publishHeaderMeta}
-                >
-                  {publishHeaderMeta}
-                </span>
-              ) : null}
-              <span data-tour="task-detail-publish-status">
-                <AutoPublishHeaderStatus
-                  data={autoPublishStatus}
-                  loading={autoPublishStatusLoading}
-                />
-              </span>
-            </div>
+          <div className="flex h-6 min-w-0 flex-1 items-center gap-2 overflow-hidden">
+            <h1
+              className="m-0 flex h-6 min-w-0 max-w-[7.5rem] shrink items-center truncate text-base font-bold leading-none tracking-tight text-slate-900 sm:max-w-[10rem] md:max-w-[14rem] lg:max-w-xs"
+              title={novelName || "未命名作品"}
+            >
+              {novelName || "未命名作品"}
+            </h1>
+            {(platform || publishAccountDisplay) ? (
+              <>
+                <HeaderMetaDivider />
+                <div className="flex h-6 min-w-0 shrink items-center gap-1.5 overflow-hidden">
+                  {platform ? (
+                    <span className="flex h-6 shrink-0 items-center text-sm leading-none text-slate-500">
+                      {getPlatformLabel(platform)}
+                    </span>
+                  ) : null}
+                  {platform && publishAccountDisplay ? (
+                    <span className="shrink-0 text-sm leading-none text-slate-400" aria-hidden>
+                      ·
+                    </span>
+                  ) : null}
+                  {publishAccountDisplay ? (
+                    <span
+                      className="flex h-6 min-w-0 items-center truncate text-sm leading-none text-slate-500"
+                      title={publishAccountDisplay}
+                    >
+                      {publishAccountDisplay}
+                    </span>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
+            <HeaderMetaDivider />
+            <span data-tour="task-detail-publish-status" className="flex h-6 shrink-0 items-center">
+              <AutoPublishHeaderStatus
+                data={autoPublishStatus}
+                loading={autoPublishStatusLoading}
+                compact
+              />
+            </span>
           </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex shrink-0 items-center gap-2">
           {authMounted && !autoPublishStatusLoading && autoPublishStatus?.auto_publish_status !== "deleted" && (
             <>
               <div data-tour="task-detail-publish-toggle">
@@ -1301,7 +1323,7 @@ export default function SessionPage() {
               <button
                 type="button"
                 onClick={() => setShowDeleteModal(true)}
-                className="px-3 py-1.5 text-sm font-medium text-slate-500 bg-white border border-slate-200 rounded-md hover:bg-red-50 hover:text-red-500 hover:border-red-200 transition-colors flex items-center gap-1.5 shadow-sm"
+                className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-500 shadow-sm transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-500"
               >
                 <Trash2 size={14} />
                 删除
@@ -1330,6 +1352,16 @@ export default function SessionPage() {
           </button>
         </div>
       </header>
+
+      {autoPublishErrorMessage ? (
+        <div
+          className="flex items-start gap-2 px-4 py-2.5 bg-red-50 border-b border-red-100 text-xs leading-relaxed text-red-700 shrink-0"
+          role="alert"
+        >
+          <AlertCircle size={14} className="shrink-0 mt-0.5 text-red-500" aria-hidden />
+          <p className="min-w-0 break-words">{autoPublishErrorMessage}</p>
+        </div>
+      ) : null}
 
       {/* ── 主内容区 ── */}
       <main className="flex-1 flex overflow-hidden">

@@ -7,6 +7,7 @@ import type { AutoPublishTaskStatus } from "@/types"
 export type AutoPublishStatusLike = {
   auto_publish_status?: string
   auto_publish_queue_position?: number
+  auto_publish_next_update_at?: string | null
   chapter_number?: number
   running?: boolean
   recoverable_at?: string
@@ -35,6 +36,45 @@ function formatFutureWait(recoverableAt: string): string {
   if (diffHour < 48) return `约 ${diffHour} 小时后继续`
   const diffDay = Math.ceil(diffMs / 86_400_000)
   return `约 ${diffDay} 天后继续`
+}
+
+function formatFutureExecute(nextUpdateAt: string): string {
+  const target = new Date(nextUpdateAt)
+  const targetMs = target.getTime()
+  if (Number.isNaN(targetMs)) return nextUpdateAt
+
+  const diffMs = targetMs - Date.now()
+  if (diffMs <= 60_000) return "即将执行"
+
+  const diffMin = Math.ceil(diffMs / 60_000)
+  if (diffMin < 60) return `约 ${diffMin} 分钟后执行`
+
+  const diffHour = Math.ceil(diffMs / 3_600_000)
+  if (diffHour < 48) return `约 ${diffHour} 小时后执行`
+
+  const pad = (n: number) => String(n).padStart(2, "0")
+  const hhmm = `${pad(target.getHours())}:${pad(target.getMinutes())}`
+  const now = new Date()
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const tomorrowStart = new Date(todayStart.getTime() + 86_400_000)
+  const targetStart = new Date(target.getFullYear(), target.getMonth(), target.getDate())
+
+  if (targetStart.getTime() === todayStart.getTime()) return `下次执行 今天 ${hhmm}`
+  if (targetStart.getTime() === tomorrowStart.getTime()) return `下次执行 明天 ${hhmm}`
+  if (target.getFullYear() === now.getFullYear()) {
+    return `下次执行 ${target.getMonth() + 1}月${target.getDate()}日 ${hhmm}`
+  }
+  return `下次执行 ${target.getFullYear()}年${target.getMonth() + 1}月${target.getDate()}日 ${hhmm}`
+}
+
+/** 任务列表卡片：queued 时在状态徽标下展示下次执行时间 */
+export function getAutoPublishListNextUpdateLabel(
+  status?: string,
+  nextUpdateAt?: string | null,
+): string | null {
+  if (normalizeStatus(status) !== "queued") return null
+  if (!nextUpdateAt?.trim()) return null
+  return formatFutureExecute(nextUpdateAt)
 }
 
 export function getAutoPublishListLabel(status?: string, queuePosition?: number): string {
@@ -69,8 +109,9 @@ export function getAutoPublishDetailSecondary(data: AutoPublishStatusLike): stri
   if (s === "running" && data.chapter_number != null && data.chapter_number > 0) {
     return `当前第 ${data.chapter_number} 章`
   }
-  if (s === "queued" && isRecoverablePending(data.recoverable_at)) {
-    return formatFutureWait(data.recoverable_at!)
+  if (s === "queued" && isRecoverablePending(data.recoverable_at ?? data.auto_publish_next_update_at ?? undefined)) {
+    const at = data.recoverable_at ?? data.auto_publish_next_update_at!
+    return formatFutureWait(at)
   }
   return null
 }
@@ -120,10 +161,12 @@ function statusDotClass(status?: string): string {
 export function AutoPublishStatusBadge({
   status,
   queuePosition,
+  hint,
   className,
 }: {
   status?: string
   queuePosition?: number
+  hint?: string | null
   className?: string
 }) {
   const label = getAutoPublishListLabel(status, queuePosition)
@@ -132,19 +175,22 @@ export function AutoPublishStatusBadge({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded-md border flex-shrink-0",
+        "inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium flex-shrink-0",
         statusBadgeClass(status),
         className,
       )}
+      title={hint ? `${label} · ${hint}` : undefined}
     >
       <span
         className={cn(
-          "w-1.5 h-1.5 rounded-full",
+          "h-1.5 w-1.5 shrink-0 rounded-full",
           statusDotClass(status),
           pulse && "motion-safe:animate-pulse",
         )}
       />
-      {label}
+      <span className="min-w-0 truncate">
+        {hint ? `${label} · ${hint}` : label}
+      </span>
     </span>
   )
 }
@@ -152,46 +198,37 @@ export function AutoPublishStatusBadge({
 export function AutoPublishHeaderStatus({
   data,
   loading,
+  compact,
   className,
 }: {
   data: AutoPublishStatusLike | null
   loading?: boolean
+  compact?: boolean
   className?: string
 }) {
   if (loading && !data) {
     return (
-      <span className={cn("inline-flex items-center gap-1.5 text-xs text-slate-400 shrink-0", className)}>
+      <span className={cn("inline-flex h-6 items-center gap-1.5 text-xs leading-none text-slate-400 shrink-0", className)}>
         <Loader2 size={12} className="animate-spin" />
         加载发布状态…
       </span>
     )
   }
 
-  const errorMessage = data ? getAutoPublishErrorMessage(data) : null
   const hint = data ? getAutoPublishDetailSecondary(data) : null
 
   return (
-    <span className={cn("inline-flex items-center gap-2 min-w-0 max-w-full flex-wrap", className)}>
+    <span className={cn("inline-flex h-6 max-w-full items-center shrink-0", className)}>
       <AutoPublishStatusBadge
         status={data?.auto_publish_status}
         queuePosition={data?.auto_publish_queue_position}
+        hint={hint}
+        className={
+          compact
+            ? "h-5 max-w-[min(52vw,20rem)] gap-1 border px-1.5 py-0 text-[11px] leading-none sm:max-w-md"
+            : undefined
+        }
       />
-      {errorMessage ? (
-        <span
-          className="text-xs text-red-600 truncate max-w-[min(50vw,18rem)] sm:max-w-md shrink"
-          title={errorMessage}
-        >
-          {errorMessage}
-        </span>
-      ) : null}
-      {hint ? (
-        <span
-          className="text-xs text-slate-500 truncate max-w-[10rem] hidden sm:inline shrink-0"
-          title={hint}
-        >
-          {hint}
-        </span>
-      ) : null}
     </span>
   )
 }

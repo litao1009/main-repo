@@ -16,6 +16,16 @@ import { sanitizeUsernameInput, validateUsername, USERNAME_HINT, USERNAME_MAX_LE
 /** 内测限制：管理员 + 普通用户合计最多 7 个 */
 const MAX_USERS = 7
 
+/** 允许展示「自动发布并发」的访问 host（浏览器地址栏 hostname，非服务端 IP） */
+const AUTO_PUBLISH_CONCURRENCY_ALLOWED_HOSTS = new Set([
+  "47.107.124.45",
+])
+
+function shouldShowAutoPublishConcurrency(): boolean {
+  if (typeof window === "undefined") return false
+  return AUTO_PUBLISH_CONCURRENCY_ALLOWED_HOSTS.has(window.location.hostname)
+}
+
 function formatLastLogin(v?: string) {
   if (!v) return null
   return <span title={formatDate(v)}>{formatRelativeTime(v)}</span>
@@ -45,6 +55,7 @@ export default function AdminUsersPage() {
   const [runningCount, setRunningCount] = useState(0)
   const [slotsLoading, setSlotsLoading] = useState(true)
   const [slotsSaving, setSlotsSaving] = useState(false)
+  const [showAutoPublishConcurrency, setShowAutoPublishConcurrency] = useState(false)
 
   const loadSlots = useCallback(async () => {
     setSlotsLoading(true)
@@ -103,7 +114,12 @@ export default function AdminUsersPage() {
   }, [page, pageSize])
 
   useEffect(() => { loadUsers(page) }, [page, loadUsers])
-  useEffect(() => { loadSlots() }, [loadSlots])
+  useEffect(() => {
+    setShowAutoPublishConcurrency(shouldShowAutoPublishConcurrency())
+  }, [])
+  useEffect(() => {
+    if (showAutoPublishConcurrency) loadSlots()
+  }, [showAutoPublishConcurrency, loadSlots])
 
   const getInitials = (name: string) => name.slice(0, 2).toUpperCase()
   const userLimitReached = total >= MAX_USERS
@@ -134,7 +150,8 @@ export default function AdminUsersPage() {
         </button>
       </div>
 
-      {/* 内测 · 自动发布并发 */}
+      {/* 内测 · 自动发布并发（按访问 host 控制显示） */}
+      {showAutoPublishConcurrency ? (
       <div className="mb-8 rounded-2xl border border-violet-100 bg-gradient-to-br from-violet-50/80 to-white p-5 shadow-sm">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
@@ -194,6 +211,7 @@ export default function AdminUsersPage() {
           </div>
         </div>
       </div>
+      ) : null}
 
       {/* 内容区 */}
       {loading ? (

@@ -13,7 +13,7 @@ import { FileText, Plus, Search, Loader2, AlertCircle, Layers } from "lucide-rea
 import Link from "next/link"
 import { cn, formatChapterLabel } from "@/lib/utils"
 import { getPlatformBadgeStyle } from "@/lib/platform-label"
-import { AutoPublishStatusBadge } from "@/lib/auto-publish-status"
+import { AutoPublishStatusBadge, getAutoPublishListNextUpdateLabel } from "@/lib/auto-publish-status"
 
 function platformBadge(p: string) {
   const conf = getPlatformBadgeStyle(p)
@@ -164,6 +164,10 @@ export default function TaskListPage() {
             {tasks.map((task, index) => {
               const subtitle = getTaskCardSubtitle(task)
               const updatedLabel = formatTaskUpdatedLabel(task.last_active_at)
+              const nextUpdateLabel = getAutoPublishListNextUpdateLabel(
+                task.auto_publish_status,
+                task.auto_publish_next_update_at,
+              )
               return (
               <Link
                 key={task.task_id}
@@ -255,11 +259,15 @@ export default function TaskListPage() {
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center justify-between text-[11px] text-slate-400 mt-1">
-                      <span className="inline-block min-h-[1em]" aria-hidden={!updatedLabel}>
-                        {updatedLabel ?? "\u00a0"}
+                    <div className="flex items-center justify-between text-[11px] text-slate-400 mt-1 gap-2">
+                      <span
+                        className="inline-block min-w-0 truncate"
+                        title={nextUpdateLabel ? (task.auto_publish_next_update_at ?? undefined) : undefined}
+                        aria-hidden={!nextUpdateLabel && !updatedLabel}
+                      >
+                        {nextUpdateLabel ?? updatedLabel ?? "\u00a0"}
                       </span>
-                      <span>创建于 {formatRelativeTime(task.created_at)}</span>
+                      <span className="shrink-0">创建于 {formatRelativeTime(task.created_at)}</span>
                     </div>
                   </div>
                 </div>
