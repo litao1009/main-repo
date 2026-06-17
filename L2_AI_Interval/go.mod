@@ -25,8 +25,8 @@ require (
 	google.golang.org/protobuf v1.32.0 // indirect
 )
 
-replace clawstudios/l1_ai_releaser => /home/zmp/claw_studios/L1_AI_Releaser
+replace clawstudios/l1_ai_releaser => /home/main-repo/L1_AI_Releaser
 
-replace L0_AI_Account_Secret_Vault => /home/zmp/claw_studios/L0_AI_Account_Secret_Vault
+replace L0_AI_Account_Secret_Vault => /home/main-repo/L0_AI_Account_Secret_Vault
 
-replace clawstudios/pkg/logging => /home/claw_studios/code/pkg/logging
+replace clawstudios/pkg/logging => /home/main-repo/pkg/logging

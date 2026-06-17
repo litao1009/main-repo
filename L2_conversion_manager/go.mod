@@ -8,4 +8,4 @@ require (
 	github.com/gorilla/mux v1.8.1
 )
 
-replace clawstudios/pkg/logging => /home/claw_studios/code/pkg/logging
+replace clawstudios/pkg/logging => /home/main-repo/pkg/logging

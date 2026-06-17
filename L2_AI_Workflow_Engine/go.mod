@@ -11,12 +11,12 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.44
 )
 
-replace clawstudios/pkg/logging => /home/claw_studios/code/pkg/logging
+replace clawstudios/pkg/logging => /home/main-repo/pkg/logging
 
 require filippo.io/edwards25519 v1.2.0 // indirect
 
-replace clawstudios/l1_ai_releaser => /home/claw_studios/code/L1_AI_Releaser
+replace clawstudios/l1_ai_releaser => /home/main-repo/L1_AI_Releaser
 
-replace L0_AI_Account_Secret_Vault => /home/claw_studios/code/L0_AI_Account_Secret_Vault
+replace L0_AI_Account_Secret_Vault => /home/main-repo/L0_AI_Account_Secret_Vault
 
-replace a4md => /home/claw_studios/code/L1_AI_Doc_Hub
+replace a4md => /home/main-repo/L1_AI_Doc_Hub

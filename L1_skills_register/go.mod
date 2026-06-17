@@ -7,4 +7,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-replace clawstudios/pkg/logging => /home/claw_studios/code/pkg/logging
+replace clawstudios/pkg/logging => /home/main-repo/pkg/logging

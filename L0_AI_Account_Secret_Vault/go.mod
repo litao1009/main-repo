@@ -8,6 +8,6 @@ require (
 	golang.org/x/crypto v0.51.0
 )
 
-replace clawstudios/pkg/logging => /home/claw_studios/code/pkg/logging
+replace clawstudios/pkg/logging => /home/main-repo/pkg/logging
 
 require filippo.io/edwards25519 v1.2.0 // indirect
