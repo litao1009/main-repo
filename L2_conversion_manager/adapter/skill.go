@@ -246,6 +246,41 @@ func WriteSkillFile(skillsDir, skillName string, skill SkillDef) (string, error)
 	return path, nil
 }
 
+func WritePromptDebugLog(cwd string, skill SkillDef, msg string) {
+	path := filepath.Join(cwd, "prompt_debug.log")
+	var sb strings.Builder
+	sb.WriteString("========================================\n")
+	sb.WriteString("PROMPT DEBUG LOG — SKILL.MD + USER MESSAGE SENT TO OPENCODE\n")
+	sb.WriteString("========================================\n\n")
+
+	actualContent := skill.RawContent
+	if actualContent == "" {
+		actualContent = RenderSkillMD(skill)
+	}
+
+	sb.WriteString("=== SKILL.MD (written to disk, loaded as skill) ===\n\n")
+	sb.WriteString(actualContent)
+	sb.WriteString("\n\n=== USER MESSAGE (CLI arg to opencode run) ===\n\n")
+	sb.WriteString(msg)
+	sb.WriteString("\n\n========================================\n")
+	sb.WriteString("Diagnostic info:\n")
+	sb.WriteString(fmt.Sprintf("  Skill ID: %s\n", skill.ID))
+	sb.WriteString(fmt.Sprintf("  Skill Name: %s\n", skill.Name))
+	sb.WriteString(fmt.Sprintf("  Is shadow (from L1): %v\n", skill.RawContent != ""))
+	sb.WriteString(fmt.Sprintf("  StyleRules count: %d\n", len(skill.StyleRules)))
+	sb.WriteString(fmt.Sprintf("  Constraints count: %d\n", len(skill.Constraints)))
+	sb.WriteString(fmt.Sprintf("  Message length: %d chars\n", len(msg)))
+	sb.WriteString(fmt.Sprintf("  SKILL.md length: %d chars\n", len(actualContent)))
+	sb.WriteString("========================================\n")
+	sb.WriteString("Note: The ACTUAL API request sent to DeepSeek includes additional\n")
+	sb.WriteString("system prompt and conversation structure added by opencode.\n")
+	sb.WriteString("To see the full HTTP request, check stderr for opencode DEBUG logs\n")
+	sb.WriteString("(enabled via --print-logs --log-level DEBUG flags).\n")
+	sb.WriteString("========================================\n")
+
+	_ = os.WriteFile(path, []byte(sb.String()), 0644)
+}
+
 func BuildStartMessage(novelName string, skill SkillDef, userText string, chapterNumber int) string {
 	var sb strings.Builder
 

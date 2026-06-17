@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -85,5 +87,20 @@ func FetchSkillFromL1(ctx context.Context, registryURL, skillID string) (SkillDe
 		ModelRecommended: model,
 		OutputSchema:     schemaStr,
 		RawContent:       l1.PromptContent,
+		Constraints:      extractConstraints(l1.PromptContent),
 	}, nil
+}
+
+var wordCountRe = regexp.MustCompile(`每章\S*\s*\d{4}\s*[-–—]\s*\d{4}\s*中?文字?`)
+var outputFormatRe = regexp.MustCompile(`输出格式为\s*Markdown`)
+
+func extractConstraints(rawContent string) []string {
+	var constraints []string
+	if match := wordCountRe.FindString(rawContent); match != "" {
+		constraints = append(constraints, strings.TrimSpace(match))
+	}
+	if match := outputFormatRe.FindString(rawContent); match != "" {
+		constraints = append(constraints, strings.TrimSpace(match))
+	}
+	return constraints
 }

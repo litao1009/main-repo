@@ -1479,6 +1479,8 @@ func (sm *SessionManager) WakeTask(ctx context.Context, taskID string, req model
 		msg = adapter.BuildStartMessage(novelName, skill, req.Text, chapterNum)
 	}
 
+	adapter.WritePromptDebugLog(cwd, skill, msg)
+
 	go sm.runSessionLoop(context.Background(), sessionID, taskID, cwd, model, msg, "")
 
 	return sess, nil

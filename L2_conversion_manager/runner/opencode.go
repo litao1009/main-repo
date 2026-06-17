@@ -83,6 +83,8 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 			"run",
 			"--format", "json",
 			"--thinking",
+			"--print-logs",
+			"--log-level", "DEBUG",
 			"--model", opts.Model,
 			"--dir", opts.CWD,
 		}
@@ -110,11 +112,9 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 
 		logger.Info("opencode launch: cwd=%s model=%s session_id=%s msg_len=%d config_path=%s deepseek_key_set=%v binary=%s",
 			opts.CWD, opts.Model, opts.SessionID, len(opts.Message), opts.ConfigPath, opts.DeepseekAPIKey != "", r.binaryPath)
-		msgPreview := opts.Message
-		if len(msgPreview) > 300 {
-			msgPreview = msgPreview[:300] + "..."
-		}
-		logger.Info("opencode message: %s", msgPreview)
+		logger.Info("========== PROMPT DEBUG START (full message to opencode) ==========")
+		logger.Info("opencode message (%d chars):\n%s", len(opts.Message), opts.Message)
+		logger.Info("========== PROMPT DEBUG END ==========")
 		if entries, err := os.ReadDir(opts.CWD); err == nil {
 			names := make([]string, 0, len(entries))
 			for _, e := range entries {
