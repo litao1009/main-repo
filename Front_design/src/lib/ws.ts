@@ -1,7 +1,7 @@
 import { getToken } from "./auth"
 import type { WSEvent } from "@/types"
 
-const WS_BASE = process.env.NEXT_PUBLIC_WS_BASE || ""
+import { wsUrl } from "./origin"
 
 /** 任务详情页聊天 WebSocket（含自动重连）。false 时页面不连接，改由 HTTP 轮询拉回复 */
 export const TASK_DETAIL_CHAT_WS_ENABLED = false
@@ -115,7 +115,7 @@ export function connectSessionWS(
   onConnected?: () => void,
 ): WSController {
   const token = getToken()
-  const url = `${WS_BASE}/ws/session/${sessionId}?token=${token || ""}`
+  const url = wsUrl(`/ws/session/${sessionId}?token=${token || ""}`)
   return createReconnectingWS(url, onEvent, onError, onClose, onReconnecting, onConnected)
 }
 
@@ -128,7 +128,7 @@ export function connectChatTaskWS(
   onConnected?: () => void,
 ): WSController {
   const token = getToken()
-  const url = `${WS_BASE}/ws/chat/${taskId}?token=${token || ""}`
+  const url = wsUrl(`/ws/chat/${taskId}?token=${token || ""}`)
   activeUrls.get(url)?.close()
   const controller = createReconnectingWS(url, onEvent, onError, onClose, onReconnecting, onConnected)
   activeUrls.set(url, controller)
@@ -142,7 +142,7 @@ export function connectTaskWS(
   onClose?: () => void,
 ): WebSocket {
   const token = getToken()
-  const url = `${WS_BASE}/ws/task/${taskId}?token=${token || ""}`
+  const url = wsUrl(`/ws/task/${taskId}?token=${token || ""}`)
   const ws = new WebSocket(url)
 
   ws.onmessage = (msg) => {

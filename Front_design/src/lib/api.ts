@@ -44,7 +44,7 @@ import type {
   AutoPublishQueueResponse,
 } from "@/types"
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || ""
+import { apiUrl } from "./origin"
 
 function authHeaders(): Record<string, string> {
   const token = getToken()
@@ -68,7 +68,7 @@ function dedupeInflight<T>(key: string, request: () => Promise<T>): Promise<T> {
 
 async function get<T>(path: string): Promise<T> {
   return dedupeInflight(`GET ${path}`, async () => {
-    const res = await fetch(`${API_BASE}${path}`, { headers: authHeaders() })
+    const res = await fetch(apiUrl(path), { headers: authHeaders() })
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       throw new Error(body.message || body.errorMessage || `HTTP ${res.status}`)
@@ -78,7 +78,7 @@ async function get<T>(path: string): Promise<T> {
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(apiUrl(path), {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify(body),
@@ -433,7 +433,7 @@ export async function getBookContent(
 }
 
 async function put<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(apiUrl(path), {
     method: "PUT",
     headers: authHeaders(),
     body: JSON.stringify(body),
@@ -446,7 +446,7 @@ async function put<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function del<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(apiUrl(path), {
     method: "DELETE",
     headers: authHeaders(),
   })

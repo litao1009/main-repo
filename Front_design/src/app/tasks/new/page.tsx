@@ -22,9 +22,10 @@ const PLATFORM_OPTS = [
   { value: "zhulang", label: "逐浪网",   bg: "bg-blue-50",  text: "text-blue-500", char: "逐" },
 ]
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || ""
+import { apiUrl } from "@/lib/origin"
+
 function coverUrl(path: string): string {
-  return `${API_BASE}${path}`
+  return apiUrl(path)
 }
 
 function FieldHeader({ label, required, hint }: { label: string; required?: boolean; hint?: string }) {

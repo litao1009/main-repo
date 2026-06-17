@@ -2,7 +2,7 @@
 
 const JWT_KEY = "bff_jwt_token"
 const USER_KEY = "bff_user"
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || ""
+import { apiUrl } from "./origin"
 
 export interface AuthUser {
   uid: string
@@ -88,7 +88,7 @@ async function requestAuthMe(): Promise<AuthUser | null> {
   const token = getToken()
   if (!token) return null
   try {
-    const resp = await fetch(`${API_BASE}/api/auth/me`, {
+    const resp = await fetch(apiUrl("/api/auth/me"), {
       headers: { Authorization: `Bearer ${token}` },
     })
     if (!resp.ok) {
@@ -126,7 +126,7 @@ export async function login(account: string, password: string): Promise<AuthUser
   const normalized = /^\d[\d\s-]*$/.test(account.trim())
     ? account.replace(/\D/g, "")
     : account.trim()
-  const resp = await fetch(`${API_BASE}/api/auth/login`, {
+  const resp = await fetch(apiUrl("/api/auth/login"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username: normalized, password }),
