@@ -27,7 +27,7 @@ SYSTEM_PROMPT_TEMPLATE = """你是一位专业的网络小说作家，擅长创�
 
 【严格写作要求】
 
-1. 字数控制：正文必须严格控制在 2200-2500 字（中文）。禁止短章或注水。
+1. 字数控制：正文必须严格控制在 2400-2600 字（中文）。禁止短章或注水。
 
 2. 情节结构：
    - 开篇：快速切入冲突或悬念（黄金三章法则）
@@ -67,7 +67,7 @@ SYSTEM_PROMPT_TEMPLATE = """你是一位专业的网络小说作家，擅长创�
 
 USER_PROMPT_TEMPLATE = """请创作小说《{novel_title}》的第 {chapter_num} 章。
 标题：{chapter_title}
-目标字数：约 2300 字
+目标字数：约 2500 字
 请确保内容精彩、逻辑自洽、爽点密集。"""
 
 # 续写章节时的补充 Prompt
@@ -95,7 +95,7 @@ REGENERATE_PROMPT_TEMPLATE = """请重新创作小说《{novel_title}》的第 {
 3. 描写更细腻
 4. 逻辑更严密
 
-目标字数：2200-2500 字
+目标字数：2400-2600 字
 
 请开始创作改进版本："""
 
@@ -169,9 +169,9 @@ def build_regenerate_prompt(
 # 生成质量检查清单
 QUALITY_CHECKLIST = {
     "word_count": {
-        "min": 2200,
-        "max": 2500,
-        "description": "字数控制在 2200-2500"
+        "min": 2300,
+        "max": 2600,
+        "description": "字数控制在 2400-2600"
     },
     "structure": {
         "required_sections": ["开篇冲突", "中段发展", "结尾钩子"],

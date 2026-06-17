@@ -22,10 +22,10 @@ const PLATFORM_OPTS = [
   { value: "zhulang", label: "逐浪网",   bg: "bg-blue-50",  text: "text-blue-500", char: "逐" },
 ]
 
-import { apiUrl } from "@/lib/origin"
+import { assetUrl } from "@/lib/origin"
 
-function coverUrl(path: string): string {
-  return apiUrl(path)
+function coverUrl(path?: string): string {
+  return assetUrl(path)
 }
 
 function FieldHeader({ label, required, hint }: { label: string; required?: boolean; hint?: string }) {

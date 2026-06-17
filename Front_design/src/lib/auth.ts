@@ -87,13 +87,25 @@ function profileFromMemory(): AuthProfile | null {
 async function requestAuthMe(): Promise<AuthUser | null> {
   const token = getToken()
   if (!token) return null
+
+  /** 网络抖动 / 页面刷新导致请求中断时，保留本地会话，避免误登出 */
+  const fallbackToCached = (): AuthUser | null => {
+    const cached = getAuthUser()
+    if (!cached) return null
+    sessionVerified = true
+    return cached
+  }
+
   try {
     const resp = await fetch(apiUrl("/api/auth/me"), {
       headers: { Authorization: `Bearer ${token}` },
     })
-    if (!resp.ok) {
+    if (resp.status === 401 || resp.status === 403) {
       clearAuth()
       return null
+    }
+    if (!resp.ok) {
+      return fallbackToCached()
     }
     const data = await resp.json()
     const profile = data.data || data
@@ -117,8 +129,7 @@ async function requestAuthMe(): Promise<AuthUser | null> {
     }
     return getAuthUser()
   } catch {
-    clearAuth()
-    return null
+    return fallbackToCached()
   }
 }
 

@@ -2,7 +2,7 @@ id: general_fallback_v1
 name: 通用创作 v1
 version: 1.0.0
 category: preset
-description: 通用小说创作风格，支持言情、玄幻、都市、悬疑等多种类型，自动识别用户需求并选择合适的写作方式，不少于1000字
+description: 通用小说创作风格，支持言情、玄幻、都市、悬疑等多种类型，自动识别用户需求并选择合适的写作方式，每章2400-2600字
 targets: []
 model_recommended:
   primary: deepseek-chat

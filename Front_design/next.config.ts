@@ -16,6 +16,10 @@ const nextConfig: NextConfig = {
         source: "/ws/:path*",
         destination: "http://127.0.0.1:8088/ws/:path*",
       },
+      {
+        source: "/covers/:path*",
+        destination: "http://127.0.0.1:8088/covers/:path*",
+      },
     ];
   },
 };

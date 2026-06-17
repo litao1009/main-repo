@@ -185,11 +185,24 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 
 		go func() {
 			defer close(stdoutDone)
+
+			tracePath := filepath.Join(opts.CWD, "api_trace.jsonl")
+			traceFile, _ := os.Create(tracePath)
+			if traceFile != nil {
+				defer traceFile.Close()
+			}
+
 			scanner := bufio.NewScanner(stdout)
 			scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 			for scanner.Scan() {
 				stdoutLineCount++
 				line := scanner.Text()
+
+				if traceFile != nil {
+					traceFile.WriteString(line)
+					traceFile.WriteString("\n")
+				}
+
 				if stdoutLineCount <= 20 {
 					truncated := line
 					if len(truncated) > 500 {
