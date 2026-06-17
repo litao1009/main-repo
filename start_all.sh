@@ -20,6 +20,7 @@ WF_DIR="$SCRIPT_DIR/L2_AI_Workflow_Engine"
 SCHEDULER_DIR="$SCRIPT_DIR/L2_AI_Interval"
 BFF_DIR="$SCRIPT_DIR/L3_AI_BFF"
 FE_DIR="$SCRIPT_DIR/Front_design"
+FE_PORT="${FE_PORT:-3000}"
 COVER_DIR="$SCRIPT_DIR/L1_novel_cover_png"
 MIGRATIONS_DIR="$SCRIPT_DIR/migrations"
 
@@ -28,6 +29,39 @@ LOG_DIR="/tmp/logs"
 
 as_run_user() {
     env "$@"
+}
+
+# ========== 运行用户校验 ==========
+ensure_run_user() {
+    local current
+    current="$(whoami)"
+    if [ "$current" != "$RUN_USER" ]; then
+        fail "请以 $RUN_USER 用户运行本脚本，当前用户: $current"
+        echo "       用法: su - $RUN_USER -c 'cd $SCRIPT_DIR && bash start_all.sh'"
+        exit 1
+    fi
+}
+
+# ========== 前端目录权限（避免 root/sudo 构建遗留导致 EACCES） ==========
+ensure_frontend_permissions() {
+    local me="$RUN_USER"
+    local dir fixed=0
+
+    cd "$FE_DIR"
+    for dir in .next node_modules; do
+        [ -d "$dir" ] || continue
+        if find "$dir" -mindepth 1 ! -user "$me" -print -quit 2>/dev/null | grep -q .; then
+            warn "  $dir 存在非 $me 属主文件（可能曾用 root/sudo 构建），正在修复..."
+            if sudo chown -R "$me:$me" "$dir" 2>/dev/null; then
+                ok "  $dir 属主已修正为 $me"
+            else
+                warn "  chown 失败，删除 $dir 以便重建..."
+                sudo rm -rf "$dir" 2>/dev/null || rm -rf "$dir"
+            fi
+            fixed=1
+        fi
+    done
+    [ "$fixed" -eq 0 ] || true
 }
 
 # ========== 环境变量（可覆盖） ==========
@@ -264,16 +298,57 @@ detect_server_ipv4() {
     return 1
 }
 
+# ========== 清理旧前端（Next.js 16 监听进程为 next-server，需按端口清理） ==========
+cleanup_frontend() {
+    log "清理旧前端进程 (:${FE_PORT})..."
+    local pid cwd
+
+    # 1. 按端口释放（只影响 :3000，不碰后端 Go 服务端口）
+    if command -v fuser &>/dev/null; then
+        sudo fuser -k "${FE_PORT}/tcp" 2>/dev/null || true
+    elif command -v lsof &>/dev/null; then
+        local pids
+        pids=$(lsof -t -i ":${FE_PORT}" -sTCP:LISTEN 2>/dev/null || true)
+        if [ -n "$pids" ]; then
+            sudo kill $pids 2>/dev/null || true
+        fi
+    fi
+
+    # 2. 清理 Front_design 目录下残留的 npm / next 包装进程（dev、start 均适用）
+    for pid in $(pgrep -f "npm run start|npm run dev|/bin/next dev|/bin/next start" 2>/dev/null || true); do
+        cwd=$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)
+        if [ "$cwd" = "$FE_DIR" ]; then
+            sudo kill "$pid" 2>/dev/null || true
+        fi
+    done
+
+    sleep 2
+
+    if ss -tlnp 2>/dev/null | grep -q ":${FE_PORT} "; then
+        warn "  端口 :${FE_PORT} 仍被占用，再次按端口释放..."
+        if command -v fuser &>/dev/null; then
+            sudo fuser -k "${FE_PORT}/tcp" 2>/dev/null || true
+        fi
+        sleep 1
+    fi
+
+    if ss -tlnp 2>/dev/null | grep -q ":${FE_PORT} "; then
+        warn "  端口 :${FE_PORT} 仍被占用，请手动检查: ss -tlnp | grep :${FE_PORT}"
+    else
+        ok "前端端口 :${FE_PORT} 已释放"
+    fi
+
+    sudo rm -f /tmp/fe.log 2>/dev/null || true
+}
+
 # ========== 清理旧进程 ==========
 cleanup_old() {
     log "清理旧进程..."
     for proc in run_bff.sh skill_registry ai_provider session_manager a1_server c2_dashboard workflow_engine scheduler bff-server; do
         sudo pkill -f "$proc" 2>/dev/null || true
     done
-    sudo pkill -f "next dev" 2>/dev/null || true
-    sudo pkill -f "next start" 2>/dev/null || true
-    sudo rm -f /tmp/fe.log 2>/dev/null || true
-    sleep 2
+    cleanup_frontend
+    sleep 1
 }
 
 # ========== 前置检查 ==========
@@ -474,6 +549,7 @@ build_all() {
     # 编译前端
     log "  编译 Frontend (Next.js) ..."
     cd "$FE_DIR"
+    ensure_frontend_permissions
     ensure_frontend_env
     if npm install 2>/tmp/build_err.log && npm run build 2>>/tmp/build_err.log; then
         ok "frontend"
@@ -499,6 +575,7 @@ start_skills_register() {
     log "启动 Skills Register (:18090)..."
     cd "$SR_DIR"
     setsid ./skill_registry --port 18090 --internal-auth="" \
+        --skill-dir /home/main-repo/L1_skills_register/fixtures \
         --cover-bin "$COVER_DIR/novelcover_pure" \
         --fonts-dir "$COVER_DIR/fonts" \
         > /tmp/sr.log 2>&1 &
@@ -679,9 +756,13 @@ NEXT_PUBLIC_WS_BASE=
 # ============================================================
 
 start_frontend() {
-    log "启动 Frontend (:3000)..."
+    log "启动 Frontend (:${FE_PORT})..."
     cd "$FE_DIR"
+    ensure_frontend_permissions
     ensure_frontend_env
+
+    # 启动前再清一次，避免 build 阶段其他操作重新占用端口
+    cleanup_frontend
 
     local server_ip fe_cmd fe_mode
     server_ip=$(detect_server_ipv4 2>/dev/null || echo "")
@@ -703,13 +784,24 @@ start_frontend() {
         fi
     fi
 
-    setsid bash -c "$fe_cmd" > /tmp/fe.log 2>&1 &
+    setsid bash -c "cd '$FE_DIR' && $fe_cmd" > /tmp/fe.log 2>&1 &
     sleep 5
-    if curl -s --max-time 3 http://127.0.0.1:3000 > /dev/null 2>&1; then
-        ok "Frontend :3000 ($fe_mode)"
-    else
-        fail "Frontend 启动失败 ($fe_mode，可能仍在编译中，请稍等或查看 /tmp/fe.log)"
+
+    if grep -q "EADDRINUSE" /tmp/fe.log 2>/dev/null; then
+        fail "Frontend 启动失败：端口 :${FE_PORT} 被占用（详见 /tmp/fe.log）"
+        return 1
     fi
+
+    if ! curl -s --max-time 3 "http://127.0.0.1:${FE_PORT}" > /dev/null 2>&1; then
+        fail "Frontend 启动失败 ($fe_mode，可能仍在编译中，请稍等或查看 /tmp/fe.log)"
+        return 1
+    fi
+
+    if ! grep -qE "Ready|Starting" /tmp/fe.log 2>/dev/null; then
+        warn "  /tmp/fe.log 未见 Ready 标记，若页面异常请查看日志"
+    fi
+
+    ok "Frontend :${FE_PORT} ($fe_mode)"
 }
 
 # ============================================================
@@ -723,6 +815,8 @@ main() {
     echo -e "${CYAN}    运行用户: $RUN_USER${NC}"
     echo -e "${CYAN}========================================${NC}"
     echo ""
+
+    ensure_run_user
 
     # 环境安装
     log "=== 环境检测与安装 ==="

@@ -1,5 +1,4 @@
 # 文档
-*.md
 *.txt
 *.doc
 *.docx
@@ -17,7 +16,6 @@ test_*
 *_check/
 *Test*
 *Spec*
-*.sh
 
 # 敏感信息
 *.key
