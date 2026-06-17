@@ -77,6 +77,11 @@ func (v *RealSecretVault) DeleteUser(ctx context.Context, uid, operatorUID strin
 	return v.userStore.DeleteUser(ctx, uid, operatorUID)
 }
 
+// EnsureDefaultAdmin 在无管理员时写入默认 admin 账号。
+func (v *RealSecretVault) EnsureDefaultAdmin(ctx context.Context) (bool, error) {
+	return v.userStore.EnsureDefaultAdmin(ctx)
+}
+
 func (v *RealSecretVault) RecordAdminAudit(ctx context.Context, operatorUID, action, targetUID, detail string) {
 	v.adminAudit.Record(ctx, operatorUID, action, targetUID, detail)
 }

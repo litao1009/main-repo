@@ -41,6 +41,11 @@ func main() {
 		defer rv.Close()
 		srv.vault = rv
 		srv.rv = rv
+		if created, err := rv.EnsureDefaultAdmin(context.Background()); err != nil {
+			log.Fatalf("failed to ensure default admin: %v", err)
+		} else if created {
+			log.Printf("default admin created: username=%s (please change password after first login)", vault.DefaultAdminUsername)
+		}
 		if err := rv.BackfillCredentialFingerprints(context.Background()); err != nil {
 			log.Printf("warning: credential fingerprint backfill failed: %v", err)
 		}
