@@ -513,6 +513,7 @@ func (p *FanqiePlatform) phasePrepare(job *AutoPublishJob) *chapterGenState {
 						continue
 					}
 					state.draft = draft
+					state.sessionID = s.SessionID
 					log.Printf("[auto_publish] task=%s phasePrepare 从session=%s加载草稿 chapter=%d contentLen=%d", taskID, s.SessionID, nextChapter, len(draft))
 					break
 				}
