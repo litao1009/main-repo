@@ -239,6 +239,31 @@ setup_mysql_auth() {
     return 1
 }
 
+# ========== 前端开发机 IP（该 IP 用 npm run dev，其余用 npm run start） ==========
+FRONTEND_DEV_HOST="${FRONTEND_DEV_HOST:-47.107.124.45}"
+
+detect_server_ipv4() {
+    local ip=""
+    for url in \
+        "http://100.100.100.200/latest/meta-data/eipv4" \
+        "http://169.254.169.254/latest/meta-data/public-ipv4"; do
+        ip=$(curl -fsS --connect-timeout 1 --max-time 2 "$url" 2>/dev/null || true)
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    if command -v hostname &>/dev/null; then
+        for ip in $(hostname -I 2>/dev/null); do
+            if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ip" != "127.0.0.1" ]; then
+                echo "$ip"
+                return 0
+            fi
+        done
+    fi
+    return 1
+}
+
 # ========== 清理旧进程 ==========
 cleanup_old() {
     log "清理旧进程..."
@@ -246,6 +271,7 @@ cleanup_old() {
         sudo pkill -f "$proc" 2>/dev/null || true
     done
     sudo pkill -f "next dev" 2>/dev/null || true
+    sudo pkill -f "next start" 2>/dev/null || true
     sudo rm -f /tmp/fe.log 2>/dev/null || true
     sleep 2
 }
@@ -644,12 +670,32 @@ ENVEOF
         log "  已创建 .env.local (默认指向 localhost:8088)"
     fi
 
-    setsid npm run dev > /tmp/fe.log 2>&1 &
+    local server_ip fe_cmd fe_mode
+    server_ip=$(detect_server_ipv4 2>/dev/null || echo "")
+    if [ "$server_ip" = "$FRONTEND_DEV_HOST" ]; then
+        fe_mode="dev"
+        fe_cmd="npm run dev"
+        log "  检测到开发机 IP ($server_ip)，使用 npm run dev"
+    else
+        fe_mode="start"
+        fe_cmd="npm run start"
+        if [ -n "$server_ip" ]; then
+            log "  当前 IP ($server_ip) ≠ $FRONTEND_DEV_HOST，使用 npm run start"
+        else
+            warn "  未能自动检测 IP，默认使用 npm run start"
+        fi
+        if [ ! -d ".next" ]; then
+            fail "生产模式需要 build 产物，.next 不存在"
+            return 1
+        fi
+    fi
+
+    setsid bash -c "$fe_cmd" > /tmp/fe.log 2>&1 &
     sleep 5
     if curl -s --max-time 3 http://127.0.0.1:3000 > /dev/null 2>&1; then
-        ok "Frontend :3000"
+        ok "Frontend :3000 ($fe_mode)"
     else
-        fail "Frontend 启动失败 (可能仍在编译中，请稍等或查看 /tmp/fe.log)"
+        fail "Frontend 启动失败 ($fe_mode，可能仍在编译中，请稍等或查看 /tmp/fe.log)"
     fi
 }
 
