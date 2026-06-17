@@ -25,7 +25,7 @@ var PrebuiltSkills = map[string]SkillDef{
 	"general_fallback_v1": {
 		ID:               "general_fallback_v1",
 		Name:             "通用创作 v1",
-		Description:      "通用小说创作风格，支持言情、玄幻、都市、悬疑等多种类型，自动识别用户需求并选择合适的写作方式，不少于2000字",
+		Description:      "通用小说创作风格，支持言情、玄幻、都市、悬疑等多种类型，自动识别用户需求并选择合适的写作方式，每章2400-2600字",
 		Category:         "preset",
 		ModelRecommended: "deepseek-chat",
 		TargetPlatforms:  []string{"general"},
@@ -46,7 +46,7 @@ var PrebuiltSkills = map[string]SkillDef{
 			"风格延续（续写）：保持与 RECENT_DRAFTS.md 中文风的一致性，包括句式、用词、叙事节奏、对话风格",
 		},
 		Constraints: []string{
-			"正文字数控制在1000-1500字",
+			"每章正文严格控制在2400-2600字",
 			"输出格式为Markdown",
 			"每章开头必须输出章节标题 '# 第X章 章节名称'（一级标题，禁止 ##），标题后紧跟正文内容。名称必填，不可只有章节号",
 			"章节标题必须与当前章节内容强相关，体现本章的核心情节或爽点",
@@ -57,27 +57,27 @@ var PrebuiltSkills = map[string]SkillDef{
   "required": ["chapter_title", "content"],
   "properties": {
     "chapter_title": {"type": "string", "minLength": 4, "maxLength": 50},
-    "content": {"type": "string", "minLength": 1000, "maxLength": 3000}
-  }
-}`,
+     "content": {"type": "string", "minLength": 2300, "maxLength": 2800}
+   }
+ }`,
 	},
 
 	"my-novel-writer": {
 		ID:               "my-novel-writer",
 		Name:             "小说写手",
-		Description:      "辅助创作长篇小说的智能助手，支持人物设定、世界观管理、大纲控制和分章生成",
+		Description:      "辅助创作长篇小说的智能助手，支持人物设定、世界观管理、大纲控制和分章生成，每章2400-2600字",
 		Category:         "custom",
 		ModelRecommended: "deepseek-chat",
 		TargetPlatforms:  []string{"fanqie", "novel"},
 		StyleRules: []string{
 			"根据用户提供的人物设定、世界观、大纲进行小说章节创作",
-			"每章字数控制在2200-2500字，确保逻辑连贯、风格统一",
+			"每章正文严格控制在2400-2600字，确保逻辑连贯、风格统一",
 			"保持人物性格一致，世界观设定自洽",
 			"合理运用伏笔，在后续章节回收",
 			"使用第三人称叙事，注重场景描写和人物心理活动",
 		},
 		Constraints: []string{
-			"章节正文控制在1000-1500字",
+			"每章正文严格控制在2400-2600字",
 			"严格遵循已有的人物设定和世界观",
 			"输出格式为Markdown，禁止在正文前输出标题",
 			"每章末尾添加引导读者互动的内容",
@@ -87,8 +87,8 @@ var PrebuiltSkills = map[string]SkillDef{
   "required": ["chapter_title", "content"],
   "properties": {
     "chapter_title": {"type": "string", "minLength": 2, "maxLength": 50},
-    "content": {"type": "string", "minLength": 1000, "maxLength": 3000},
-    "summary": {"type": "string", "minLength": 10, "maxLength": 200},
+     "content": {"type": "string", "minLength": 2300, "maxLength": 2800},
+     "summary": {"type": "string", "minLength": 10, "maxLength": 200},
     "characters_appeared": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 10},
     "foreshadowing": {"type": "array", "items": {"type": "string"}, "minItems": 0, "maxItems": 5}
   }
@@ -268,6 +268,14 @@ func BuildStartMessage(novelName string, skill SkillDef, userText string, chapte
 	sb.WriteString("   ⚠️ 使用相对路径 \"current_draft.md\" （当前工作目录下），禁止使用绝对路径\n")
 	sb.WriteString("2. 章节标题使用 Markdown 一级标题写在 current_draft.md 最开头\n")
 	sb.WriteString("3. 正文开头不允许出现章节标题（如'第X章 XXX'）\n\n")
+
+	if len(skill.Constraints) > 0 {
+		sb.WriteString("## 输出约束\n\n")
+		for i, c := range skill.Constraints {
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, c))
+		}
+		sb.WriteString("\n")
+	}
 
 	sb.WriteString("现在请开始创作：")
 

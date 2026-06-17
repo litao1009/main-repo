@@ -27,28 +27,30 @@ import (
 )
 
 type Config struct {
-	DataDir             string
-	OpenCodeBinary      string
-	DefaultModel        string
-	MaxConcurrent       int
-	DefaultTimeoutSec   int
-	MaxMessagesPerEpoch int
-	MaxTokensPerEpoch   int
-	StaleTimeoutMin     int
-	DeepseekAPIKey      string
-	SkillRegistryURL    string
+	DataDir                  string
+	OpenCodeBinary           string
+	DefaultModel             string
+	MaxConcurrent            int
+	DefaultTimeoutSec        int
+	MaxMessagesPerEpoch      int
+	MaxTokensPerEpoch        int
+	StaleTimeoutMin          int
+	ZombieSessionTimeoutMin  int
+	DeepseekAPIKey           string
+	SkillRegistryURL         string
 }
 
 func DefaultConfig() Config {
 	return Config{
-		DataDir:             "/tmp/session_manager",
-		OpenCodeBinary:      "opencode",
-		DefaultModel:        "team-deepseek/deepseek-chat",
-		MaxConcurrent:       3,
-		DefaultTimeoutSec:   300,
-		MaxMessagesPerEpoch: 40,
-		MaxTokensPerEpoch:   60000,
-		StaleTimeoutMin:     60,
+		DataDir:                 "/tmp/session_manager",
+		OpenCodeBinary:          "opencode",
+		DefaultModel:            "team-deepseek/deepseek-chat",
+		MaxConcurrent:           3,
+		DefaultTimeoutSec:       300,
+		MaxMessagesPerEpoch:     40,
+		MaxTokensPerEpoch:       60000,
+		StaleTimeoutMin:         60,
+		ZombieSessionTimeoutMin: 30,
 	}
 }
 
@@ -147,6 +149,7 @@ func New(cfg Config) (*SessionManager, error) {
 	}
 
 	go sm.scanStaleTasks()
+	go sm.scanZombieSessions()
 
 	return sm, nil
 }
@@ -255,6 +258,46 @@ func (sm *SessionManager) cleanStaleTasks() {
 					log.Printf("WARN: failed to auto-archive %s: %v", t.ActiveSessionID, err)
 				}
 			}
+		}
+	}
+}
+
+func (sm *SessionManager) scanZombieSessions() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-sm.stopCh:
+			return
+		case <-ticker.C:
+			sm.cleanZombieSessions()
+		}
+	}
+}
+
+func (sm *SessionManager) cleanZombieSessions() {
+	timeout := time.Duration(sm.cfg.ZombieSessionTimeoutMin) * time.Minute
+	now := time.Now()
+	sessions := sm.store.ListAllSessions()
+
+	for _, sess := range sessions {
+		if sess.Status != models.StatusGenerating {
+			continue
+		}
+		if sess.MessageCount > 0 || sess.TotalTokens > 0 {
+			continue
+		}
+		if now.Sub(sess.CreatedAt) <= timeout {
+			continue
+		}
+
+		log.Printf("[zombie-scan] closing zombie session: sid=%s task=%s ch=%d age=%v msg=%d tokens=%d",
+			sess.SessionID, sess.TaskID, sess.ChapterNumber,
+			now.Sub(sess.CreatedAt).Round(time.Minute),
+			sess.MessageCount, sess.TotalTokens)
+
+		if err := sm.Close(context.Background(), sess.SessionID); err != nil {
+			log.Printf("[zombie-scan] close zombie failed: sid=%s err=%v", sess.SessionID, err)
 		}
 	}
 }
@@ -683,6 +726,14 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 		logging.WithSessionID(sessionID),
 	)
 
+	if err := sm.pool.Acquire(ctx); err != nil {
+		logger.Error(logging.ErrTimeout, "pool acquire failed: session=%s err=%v", sessionID, err)
+		sm.appendTaskMessage(taskID, sessionID, "system", chaterr.UserFacing("server busy, please retry later"), 0)
+		_ = sm.store.ClearActiveSession(taskID, sessionID)
+		return
+	}
+	defer sm.pool.Release()
+
 	if sessionID != "" {
 		sm.runningSessionsMu.Lock()
 		sm.runningSessions[sessionID] = true
@@ -692,14 +743,15 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 			delete(sm.runningSessions, sessionID)
 			sm.runningSessionsMu.Unlock()
 		}()
-	}
 
-	if err := sm.pool.Acquire(ctx); err != nil {
-		logger.Error(logging.ErrTimeout, "pool acquire failed: session=%s err=%v", sessionID, err)
-		sm.appendTaskMessage(taskID, sessionID, "system", chaterr.UserFacing("server busy, please retry later"), 0)
-		return
+		checkSess, checkErr := sm.store.GetSession(taskID, sessionID)
+		if checkErr == nil && checkSess != nil {
+			if checkSess.Status == models.StatusArchived || checkSess.Status == models.StatusNoContent {
+				logger.Info("session already in terminal state (status=%s), aborting", checkSess.Status)
+				return
+			}
+		}
 	}
-	defer sm.pool.Release()
 
 	activeKey, keySource := sm.readActiveAPIKey(model)
 	costStart := sm.logSessionCostStart(logger, sessionID, taskID, model, activeKey, keySource)
@@ -849,6 +901,7 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 			logger.Error(logging.ErrSessionError, "opencode launch failed: session=%s err=%v", sessionID, err)
 			errText := chaterr.UserFacing(fmt.Sprintf("failed to start opencode: %v", err))
 			sm.appendTaskMessage(taskID, sessionID, "system", errText, 0)
+			_ = sm.store.ClearActiveSession(taskID, sessionID)
 			return
 		}
 
@@ -1137,6 +1190,10 @@ func (sm *SessionManager) Close(ctx context.Context, sessionID string) error {
 		return err
 	}
 
+	defer func() {
+		_ = sm.store.ClearActiveSession(taskID, sessionID)
+	}()
+
 	if sess.Status == models.StatusArchived {
 		return nil
 	}
@@ -1197,15 +1254,8 @@ func (sm *SessionManager) Close(ctx context.Context, sessionID string) error {
 	skillDir := sm.store.SkillDir(skillDirName)
 	os.RemoveAll(skillDir)
 
-	task, err := sm.store.GetTask(taskID)
-	if err == nil {
-		if task.ActiveSessionID == sessionID {
-			task.ActiveSessionID = ""
-			_ = sm.store.UpdateTask(task)
-		}
-	}
-
 	if len(draftData) > 0 {
+		task, _ := sm.store.GetTask(taskID)
 		go sm.generateMediumSummary(taskID, sessionID, task, sess.SkillID, draftData)
 	}
 

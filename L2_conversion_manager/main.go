@@ -23,21 +23,23 @@ func main() {
 	model := flag.String("model", "team-deepseek/deepseek-chat", "Default model")
 	maxConcurrent := flag.Int("max-concurrent", 3, "Max concurrent opencode processes")
 	staleTimeoutMin := flag.Int("stale-timeout-min", 60, "Stale session timeout in minutes")
+	zombieTimeoutMin := flag.Int("zombie-timeout-min", 30, "Timeout in minutes for zombie sessions (GENERATING with zero output)")
 	deepseekAPIKey := flag.String("deepseek-api-key", "", "Optional override for DeepSeek API key (default: read from OPENCODE_CONFIG provider section)")
 	skillRegistry := flag.String("skill-registry", "http://localhost:18090", "Skill Registry URL")
 	flag.Parse()
 
 	cfg := manager.Config{
-		DataDir:             *dataDir,
-		OpenCodeBinary:      *opencodeBin,
-		DefaultModel:        *model,
-		MaxConcurrent:       *maxConcurrent,
-		DefaultTimeoutSec:   300,
-		MaxMessagesPerEpoch: 40,
-		MaxTokensPerEpoch:   60000,
-		StaleTimeoutMin:     *staleTimeoutMin,
-		DeepseekAPIKey:      *deepseekAPIKey,
-		SkillRegistryURL:    *skillRegistry,
+		DataDir:                 *dataDir,
+		OpenCodeBinary:          *opencodeBin,
+		DefaultModel:            *model,
+		MaxConcurrent:           *maxConcurrent,
+		DefaultTimeoutSec:       300,
+		MaxMessagesPerEpoch:     40,
+		MaxTokensPerEpoch:       60000,
+		StaleTimeoutMin:         *staleTimeoutMin,
+		ZombieSessionTimeoutMin: *zombieTimeoutMin,
+		DeepseekAPIKey:          *deepseekAPIKey,
+		SkillRegistryURL:        *skillRegistry,
 	}
 
 	sm, err := manager.New(cfg)
@@ -51,6 +53,7 @@ func main() {
 	log.Printf("  Model:          %s", cfg.DefaultModel)
 	log.Printf("  Max workers:    %d", cfg.MaxConcurrent)
 	log.Printf("  Stale timeout:  %d min", cfg.StaleTimeoutMin)
+	log.Printf("  Zombie timeout: %d min", cfg.ZombieSessionTimeoutMin)
 	log.Printf("  API port:       %d", *port)
 
 	server := api.NewServer(sm)

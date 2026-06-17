@@ -13,5 +13,5 @@ L3_AI_BFF/bff-server
 L3_AI_BFF/L3_AI_BFF
 
 # Novel shadow fixtures (data files, will grow large)
-L1_skills_register/fixtures/*-shadow
-L1_skills_register/fixtures/*-shadow/
+L1_skills_register/fixtures/*shadow
+L1_skills_register/fixtures/*shadow/
