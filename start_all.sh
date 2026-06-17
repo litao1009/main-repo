@@ -474,6 +474,7 @@ build_all() {
     # 编译前端
     log "  编译 Frontend (Next.js) ..."
     cd "$FE_DIR"
+    ensure_frontend_env
     if npm install 2>/tmp/build_err.log && npm run build 2>>/tmp/build_err.log; then
         ok "frontend"
     else
@@ -653,6 +654,26 @@ start_bff() {
     fi
 }
 
+# ========== 前端环境变量（留空则走 Next.js /api、/ws 反代，适配任意 IP） ==========
+ensure_frontend_env() {
+    local env_file="$FE_DIR/.env.local"
+    local desired='# 留空则浏览器请求同源 /api、/ws，由 Next.js 反代到本机 BFF :8088
+NEXT_PUBLIC_API_BASE=
+NEXT_PUBLIC_WS_BASE=
+'
+
+    if [ ! -f "$env_file" ]; then
+        echo "$desired" > "$env_file"
+        log "  已创建 .env.local（API 走同源 /api 反代）"
+        return 0
+    fi
+
+    if grep -qE 'NEXT_PUBLIC_(API|WS)_BASE=(http|ws)://' "$env_file" 2>/dev/null; then
+        warn "  .env.local 含固定地址（会导致换 IP 部署后请求 localhost/旧 IP），已改为同源反代"
+        echo "$desired" > "$env_file"
+    fi
+}
+
 # ============================================================
 # 大模块6: 前端 (Next.js)
 # ============================================================
@@ -660,15 +681,7 @@ start_bff() {
 start_frontend() {
     log "启动 Frontend (:3000)..."
     cd "$FE_DIR"
-
-    # 确保 .env.local 存在
-    if [ ! -f ".env.local" ]; then
-        cat > ".env.local" << 'ENVEOF'
-NEXT_PUBLIC_API_BASE=http://localhost:8088
-NEXT_PUBLIC_WS_BASE=ws://localhost:8088
-ENVEOF
-        log "  已创建 .env.local (默认指向 localhost:8088)"
-    fi
+    ensure_frontend_env
 
     local server_ip fe_cmd fe_mode
     server_ip=$(detect_server_ipv4 2>/dev/null || echo "")
