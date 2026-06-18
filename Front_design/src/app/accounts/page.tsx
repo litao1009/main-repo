@@ -115,7 +115,7 @@ function mergeProfileIntoAccount(acc: AccountSummary, profile: SyncProfileRespon
 }
 
 const GO_VERIFY_BTN_CLASS =
-  'inline-flex shrink-0 rounded-md px-2 py-0.5 text-[10px] font-semibold leading-none border bg-rose-600 text-white border-rose-600 shadow-sm shadow-rose-500/20 hover:bg-rose-700 hover:border-rose-700 cursor-pointer transition-colors'
+  'inline-flex shrink-0 items-center justify-center rounded-md px-2 py-0.5 text-[10px] font-semibold leading-none border bg-rose-600 text-white border-rose-600 shadow-sm shadow-rose-500/20 hover:bg-rose-700 hover:border-rose-700 cursor-pointer transition-colors'
 
 /** 番茄「已实名」点击展开的脱敏信息浮层；未实名时番茄/七猫可跳转平台实名页 */
 function AuthIdentityBadge({
@@ -136,13 +136,13 @@ function AuthIdentityBadge({
   const hasIdentity = !!(
     acc.is_auth && (
       acc.platform === 'qimao'
-        ? false
+        ? acc.identity_code_mask
         : acc.platform === 'zhulang'
         ? acc.identity_name_mask && acc.identity_code_mask
         : acc.identity_name_mask || acc.identity_code_mask
     )
   )
-  const showQimaoAuthTip = acc.platform === 'qimao' && acc.is_auth
+  const showQimaoAuthTip = acc.platform === 'qimao' && acc.is_auth && !acc.identity_code_mask
 
   useEffect(() => {
     if (!open) return
@@ -174,12 +174,12 @@ function AuthIdentityBadge({
   }
 
   return (
-    <div ref={wrapRef} className="relative shrink-0">
+    <div ref={wrapRef} className="relative flex shrink-0 items-center">
       <button
         type="button"
         disabled={!acc.is_auth || (!hasIdentity && !showQimaoAuthTip)}
         onClick={() => (hasIdentity || showQimaoAuthTip) && setOpen(v => !v)}
-        className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors ${
+        className={`inline-flex items-center justify-center rounded px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors ${
           acc.is_auth
             ? (hasIdentity || showQimaoAuthTip)
               ? 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 cursor-pointer'
@@ -198,7 +198,7 @@ function AuthIdentityBadge({
           <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-slate-900" />
           {acc.identity_name_mask && (
             <div className="flex gap-2 whitespace-nowrap">
-              <span className="text-slate-400 shrink-0">姓名</span>
+              <span className="text-slate-400 shrink-0">姓{'\u3000'}名</span>
               <span className="font-medium">{acc.identity_name_mask}</span>
             </div>
           )}
@@ -829,17 +829,19 @@ export default function AccountsPage() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5 min-w-0">
                               <h4
-                                className="min-w-0 truncate text-[15px] font-semibold leading-tight text-slate-900"
+                                className="m-0 min-w-0 truncate text-[15px] font-semibold leading-none text-slate-900"
                                 title={acc.masked_display}
                               >
                                 {acc.masked_display}
                               </h4>
+                              <div className="flex shrink-0 items-center self-center">
                               <AuthIdentityBadge
                                 acc={acc}
                                 onGoVerify={handleGoVerifyIdentity}
                                 verifyDisabled={isExpired || !!injectStatusMap[acc.account_id]}
                                 verifyTourAnchor={acc.account_id === tourVerifyAccountId}
                               />
+                              </div>
                             </div>
                             {acc.phone_number ? (
                               <p className="mt-0.5 text-xs text-slate-500 truncate tabular-nums">{acc.phone_number}</p>

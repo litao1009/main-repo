@@ -2,8 +2,6 @@ import type { NextConfig } from "next";
 import { resolveAllowedDevOrigins } from "./next.dev-origins";
 
 const nextConfig: NextConfig = {
-  // 开发模式下隐藏右下角 Next.js Dev Indicator（N 按钮）
-  devIndicators: false,
   // 自动收集本机/云实例 IP；也可通过 ALLOWED_DEV_ORIGINS=1.2.3.4,example.com 补充
   allowedDevOrigins: resolveAllowedDevOrigins(),
   async rewrites() {

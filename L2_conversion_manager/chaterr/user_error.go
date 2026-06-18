@@ -39,6 +39,11 @@ func UserFacing(raw string) string {
 	return msg
 }
 
+// IsTimeoutUserMessage 是否为面向用户的超时提示（草稿已就绪时不应再展示）。
+func IsTimeoutUserMessage(msg string) bool {
+	return strings.Contains(strings.TrimSpace(msg), "AI 处理超时")
+}
+
 func isMostlyTechnicalEnglish(msg string) bool {
 	han := 0
 	for _, r := range msg {

@@ -163,6 +163,7 @@ func (a *QimaoPublishAdapter) GetPlatformInfo(ctx context.Context, novelName, cr
 	if credentials == "" {
 		return nil, a.fail(ErrCodeCredentialFailed, "qimao cookie is empty", "")
 	}
+	novelName = sanitizeNovelName(novelName)
 	input := qimaoInput{Action: "get_platform_info", NovelName: novelName}
 	return a.execAndParse(ctx, input, credentials)
 }
@@ -236,6 +237,7 @@ func (a *QimaoPublishAdapter) CreateBook(ctx context.Context, credentials, novel
 	if novelName == "" {
 		return a.fail(ErrCodeInputInvalid, "qimao: novelName is empty", "")
 	}
+	novelName = sanitizeNovelName(novelName)
 
 	category1 := ""
 	category2 := ""
@@ -286,6 +288,7 @@ func (a *QimaoPublishAdapter) SetBookInfo(ctx context.Context, cookie, bookId, n
 	if len(coverBytes) == 0 {
 		return a.fail(ErrCodeInputInvalid, "qimao: coverBytes is empty", "")
 	}
+	name = sanitizeNovelName(name)
 	input := qimaoInput{
 		Action:      "set_book_info",
 		BookID:      bookId,

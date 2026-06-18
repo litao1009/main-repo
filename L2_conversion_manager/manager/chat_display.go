@@ -269,10 +269,28 @@ func draftWrittenNotice(chapterNo int, volumeName, chapterTitle string) string {
 }
 
 var (
-	draftFileInTextRe     = regexp.MustCompile(`(?i)current_draft(?:\.md)?`)
-	chapterCompletionRe   = regexp.MustCompile(`(?i)(?:已完成|已写入|已写好|写入|完成).*(?:章|草稿)|(?:章|草稿).*(?:已完成|已写入|已写好|写入)`)
+	draftFileInTextRe      = regexp.MustCompile(`(?i)current_draft(?:\.md)?`)
+	chapterCompletionRe    = regexp.MustCompile(`(?i)(?:已完成|已写入|已写好|写入|完成).*(?:章|草稿)|(?:章|草稿).*(?:已完成|已写入|已写好|写入)`)
 	chapterTitleInNoticeRe = regexp.MustCompile(`第\s*([0-9一二三四五六七八九十百千零两\d]+)\s*章\s*[《「]([^》」]+)[》」]`)
+	skillConfirmationRe    = regexp.MustCompile(`(?i)(创作风格|风格\s*skill|skill\s*工具|使用哪个.*skill|请确认.*skill|可用的.*skill|哪个风格\s*skill|名为.*的.*skill)`)
 )
+
+// isSkillConfirmationReply 判断 assistant 是否在向用户确认 Skill 选择（全自动 wake 场景应过滤）。
+func isSkillConfirmationReply(msg string) bool {
+	msg = strings.TrimSpace(msg)
+	if msg == "" || isDraftWrittenNotice(msg) {
+		return false
+	}
+	if skillConfirmationRe.MatchString(msg) {
+		return true
+	}
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "-shadow") &&
+		(strings.Contains(msg, "请指定") || strings.Contains(msg, "请问") || strings.Contains(msg, "可选项")) {
+		return true
+	}
+	return false
+}
 
 func isDraftCompletionLike(msg string) bool {
 	msg = strings.TrimSpace(msg)

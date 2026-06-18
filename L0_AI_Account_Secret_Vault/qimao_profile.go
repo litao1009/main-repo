@@ -9,15 +9,19 @@ import (
 	"strings"
 )
 
-const qimaoProfileURL = "https://zuozhe.qimao.com/api/author/profile"
+const (
+	qimaoProfileURL  = "https://zuozhe.qimao.com/api/author/profile"
+	qimaoUserInfoURL = "https://zuozhe.qimao.com/api/pc/v3/user/info"
+)
 
-// QimaoProfile 七猫 /api/author/profile 解析结果。
+// QimaoProfile 七猫作者资料解析结果（profile + user/info）。
 type QimaoProfile struct {
-	AccountID string
-	PenName   string
-	Phone     string
-	Avatar    string
-	IsAuth    bool
+	AccountID        string
+	PenName          string
+	Phone            string
+	Avatar           string
+	IsAuth           bool
+	IdentityCodeMask string
 }
 
 // FetchQimaoProfile 用 Cookie 请求七猫作者资料接口。
@@ -80,13 +84,66 @@ func FetchQimaoProfile(ctx context.Context, cookieStr string) (*QimaoProfile, er
 		return nil, fmt.Errorf("qimao profile: account_id empty")
 	}
 
-	return &QimaoProfile{
+	profile := &QimaoProfile{
 		AccountID: accountID,
 		PenName:   strings.TrimSpace(u.PenName),
 		Phone:     strings.TrimSpace(u.Phone),
 		Avatar:    strings.TrimSpace(u.Avatar),
 		IsAuth:    parseQimaoRealStatus(u.RealStatus),
-	}, nil
+	}
+
+	if isAuth, codeMask, err := fetchQimaoUserIdentity(reqCtx, cookieStr); err == nil {
+		profile.IsAuth = isAuth
+		if isAuth {
+			profile.IdentityCodeMask = codeMask
+		}
+	}
+
+	return profile, nil
+}
+
+func fetchQimaoUserIdentity(ctx context.Context, cookieStr string) (isAuth bool, identityCodeMask string, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, qimaoUserInfoURL, nil)
+	if err != nil {
+		return false, "", fmt.Errorf("build qimao user info request: %w", err)
+	}
+	req.Header.Set("Cookie", cookieStr)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	req.Header.Set("Referer", "https://zuozhe.qimao.com/front/personal-information")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+
+	client := &http.Client{Timeout: platformIdentityTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, "", fmt.Errorf("qimao user info request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, "", fmt.Errorf("qimao user info http %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return false, "", fmt.Errorf("read qimao user info response: %w", err)
+	}
+
+	var result struct {
+		Data struct {
+			RealStatus struct {
+				Full  bool   `json:"full"`
+				Value string `json:"value"`
+			} `json:"real_status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return false, "", fmt.Errorf("parse qimao user info response: %w", err)
+	}
+
+	if !result.Data.RealStatus.Full {
+		return false, "", nil
+	}
+	return true, strings.TrimSpace(result.Data.RealStatus.Value), nil
 }
 
 func parseQimaoStringField(raw json.RawMessage) string {

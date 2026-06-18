@@ -47,7 +47,7 @@ func DefaultConfig() Config {
 		OpenCodeBinary:          "opencode",
 		DefaultModel:            "deepseek/deepseek-chat",
 		MaxConcurrent:           3,
-		DefaultTimeoutSec:       300,
+		DefaultTimeoutSec:       600,
 		MaxMessagesPerEpoch:     40,
 		MaxTokensPerEpoch:       60000,
 		StaleTimeoutMin:         60,
@@ -115,7 +115,7 @@ func New(cfg Config) (*SessionManager, error) {
 		cfg.MaxConcurrent = 3
 	}
 	if cfg.DefaultTimeoutSec == 0 {
-		cfg.DefaultTimeoutSec = 300
+		cfg.DefaultTimeoutSec = 600
 	}
 	if cfg.StaleTimeoutMin == 0 {
 		cfg.StaleTimeoutMin = models.DefaultStaleTimeoutMin
@@ -152,6 +152,8 @@ func New(cfg Config) (*SessionManager, error) {
 
 	go sm.scanStaleTasks()
 	go sm.scanZombieSessions()
+
+	sm.recoverOrphanedSessions()
 
 	return sm, nil
 }
@@ -260,6 +262,20 @@ func (sm *SessionManager) cleanStaleTasks() {
 					log.Printf("WARN: failed to auto-archive %s: %v", t.ActiveSessionID, err)
 				}
 			}
+		}
+	}
+}
+
+func (sm *SessionManager) recoverOrphanedSessions() {
+	sessions := sm.store.ListAllSessions()
+	for _, sess := range sessions {
+		if sess.Status != models.StatusGenerating {
+			continue
+		}
+		log.Printf("[recovery] orphaned GENERATING session found: sid=%s task=%s ch=%d",
+			sess.SessionID, sess.TaskID, sess.ChapterNumber)
+		if err := sm.Close(context.Background(), sess.SessionID); err != nil {
+			log.Printf("[recovery] close orphaned session failed: sid=%s err=%v", sess.SessionID, err)
 		}
 	}
 }
@@ -572,6 +588,25 @@ func (sm *SessionManager) resolveChapterNoticeMeta(taskID, sessionID string, ses
 	return chapterNo, volumeName, chapterTitle, draftPath
 }
 
+func (sm *SessionManager) shouldSuppressTimeoutAfterDraftReady(taskID, sessionID, draftPath string, baselineMod time.Time, baselineSize int64, userMsg string) bool {
+	if sessionID == "" || !chaterr.IsTimeoutUserMessage(userMsg) {
+		return false
+	}
+	if DraftFileChangedSince(draftPath, baselineMod, baselineSize) {
+		return true
+	}
+	sess, err := sm.store.GetSession(taskID, sessionID)
+	if err != nil || sess == nil {
+		return false
+	}
+	switch sess.Status {
+	case models.StatusDraftReady, models.StatusWarm, models.StatusArchived:
+		return sm.hasDraftFile(taskID, sessionID)
+	default:
+		return false
+	}
+}
+
 func (sm *SessionManager) inferChapterNumberForSession(taskID string, sess *models.Session) int {
 	sessions, err := sm.store.LoadTaskSessions(taskID)
 	if err != nil {
@@ -627,7 +662,7 @@ func (sm *SessionManager) Send(ctx context.Context, sessionID string, req models
 
 	go func() {
 		defer sm.releaseTaskRun(taskID)
-		sm.runSessionLoop(context.Background(), sessionID, taskID, sess.CWDPath, sess.Model, req.Text, sess.OpenCodeSID)
+		sm.runSessionLoop(context.Background(), sessionID, taskID, sess.CWDPath, sess.Model, req.Text, sess.OpenCodeSID, false)
 	}()
 
 	return nil
@@ -662,7 +697,7 @@ func (sm *SessionManager) SendTaskMessage(ctx context.Context, taskID string, re
 		ocSID := sm.loadChatOpenCodeSession(cwd)
 		go func() {
 			defer sm.releaseTaskRun(taskID)
-			sm.runSessionLoop(context.Background(), "", taskID, cwd, task.Model, req.Text, ocSID)
+			sm.runSessionLoop(context.Background(), "", taskID, cwd, task.Model, req.Text, ocSID, false)
 		}()
 		return nil
 	}
@@ -712,12 +747,12 @@ func (sm *SessionManager) SendTaskMessage(ctx context.Context, taskID string, re
 
 	go func() {
 		defer sm.releaseTaskRun(taskID)
-		sm.runSessionLoop(context.Background(), targetSessionID, taskID, sess.CWDPath, sess.Model, req.Text, "")
+		sm.runSessionLoop(context.Background(), targetSessionID, taskID, sess.CWDPath, sess.Model, req.Text, "", false)
 	}()
 	return nil
 }
 
-func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID, cwd, model, message, ocSID string) {
+func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID, cwd, model, message, ocSID string, autoPublishWake bool) {
 	logger := logging.NewLogger("SessionWorker",
 		logging.WithTaskID(taskID),
 		logging.WithSessionID(sessionID),
@@ -810,6 +845,29 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 		}
 	}
 
+	persistDraftReadyNotice := func() {
+		if assistantPersisted || sessionID == "" {
+			return
+		}
+		if !DraftFileChangedSince(sessionDraftPath, draftBaselineMod, draftBaselineSize) {
+			return
+		}
+		chapterNo, volumeName, chapterTitle, noticeDraftPath := sm.resolveChapterNoticeMeta(taskID, sessionID, sess, sessionDraftPath)
+		title := strings.TrimSpace(chapterTitle)
+		if title == "" {
+			title = parseDraftChapterTitle(noticeDraftPath)
+		}
+		display := draftWrittenNotice(chapterNo, volumeName, title)
+		version := 0
+		if sess != nil {
+			version = sess.DraftVersion
+		} else if fresh, getErr := sm.store.GetSession(taskID, sessionID); getErr == nil {
+			version = fresh.DraftVersion
+		}
+		sm.appendTaskMessage(taskID, sessionID, "assistant", display, version)
+		assistantPersisted = true
+	}
+
 	emitDraftUpdated := func() {
 		if sessionID == "" || sessionDraftPath == "" {
 			return
@@ -821,15 +879,11 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 		if !st.ModTime().After(draftBaselineMod) && st.Size() == draftBaselineSize {
 			return
 		}
-		version := 0
 		if fresh, getErr := sm.store.GetSession(taskID, sessionID); getErr == nil {
-			version = fresh.DraftVersion
-			if version == 0 {
-				version = fresh.ChapterNumber
-			}
 			if fresh.Status == models.StatusGenerating {
 				fresh.Status = models.StatusDraftReady
 				_ = sm.store.UpsertSessionInTask(fresh)
+				persistDraftReadyNotice()
 			}
 		}
 	}
@@ -856,6 +910,9 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 			draftWrittenThisTurn,
 		)
 		if strings.TrimSpace(display) == "" {
+			return
+		}
+		if autoPublishWake && isSkillConfirmationReply(display) {
 			return
 		}
 		version := 0
@@ -924,6 +981,7 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 				evtCountReasoning++
 			case "draft_updated":
 				evtCountDraftUpdated++
+				emitDraftUpdated()
 			case "error":
 				evtCountError++
 			default:
@@ -981,7 +1039,10 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 				evt.Type == "done" || evt.Type == "error" || evt.Type == "draft_updated" ||
 				evt.Type == "reasoning" {
 				if evt.Type == "error" && evt.Error != "" {
-					sm.appendTaskMessage(taskID, sessionID, "system", chaterr.UserFacing(evt.Error), 0)
+					userMsg := chaterr.UserFacing(evt.Error)
+					if !sm.shouldSuppressTimeoutAfterDraftReady(taskID, sessionID, sessionDraftPath, draftBaselineMod, draftBaselineSize, userMsg) {
+						sm.appendTaskMessage(taskID, sessionID, "system", userMsg, 0)
+					}
 				}
 				out := evt
 				if out.Type == "token" && out.Text != "" {
@@ -996,6 +1057,11 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 
 		msgCount++
 		if !noContentDetected {
+			break
+		}
+		if sessionID != "" && DraftFileChangedSince(sessionDraftPath, draftBaselineMod, draftBaselineSize) {
+			logger.Info("draft file changed this session, accepting as output: sid=%s", sessionID)
+			noContentDetected = false
 			break
 		}
 		if attempt < maxRetries-1 {
@@ -1482,7 +1548,7 @@ func (sm *SessionManager) WakeTask(ctx context.Context, taskID string, req model
 		adapter.WritePromptDebugLog(cwd, skill, msg)
 	}
 
-	go sm.runSessionLoop(context.Background(), sessionID, taskID, cwd, model, msg, "")
+	go sm.runSessionLoop(context.Background(), sessionID, taskID, cwd, model, msg, "", true)
 
 	return sess, nil
 }

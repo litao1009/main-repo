@@ -91,7 +91,11 @@ func applyPlatformProfile(ctx context.Context, cred *AccountCredential, cookieSt
 		phone = mergeNonEmpty(phone, info.Phone)
 		avatar = mergeNonEmpty(avatar, info.Avatar)
 		isAuth = info.IsAuth
-		codeMask = ""
+		if info.IsAuth {
+			codeMask = strings.TrimSpace(info.IdentityCodeMask)
+		} else {
+			codeMask = ""
+		}
 		nameMask = ""
 	default:
 		return ErrPlatformNotSupported

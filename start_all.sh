@@ -652,9 +652,9 @@ start_session_manager() {
         --port 18080 \
         --data-dir "$DATA_DIR" \
         --max-concurrent 2 \
+        --default-timeout-sec 600 \
         --stale-timeout-min 60 \
         --skill-registry http://localhost:18090 \
-        --deepseek-api-key "${DEEPSEEK_API_KEY:-}" \
         > /tmp/sm.log 2>&1 &
     sleep 3
     if curl -s --max-time 3 http://127.0.0.1:18080/api/status > /dev/null 2>&1; then

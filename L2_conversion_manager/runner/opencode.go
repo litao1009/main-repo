@@ -298,6 +298,7 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 
 		hadError := false
 		exitCode := 0
+		var exitErrMsg string
 		if err := cmd.Wait(); err != nil {
 			hadError = true
 			if exitErr, ok := err.(*exec.ExitError); ok {
@@ -306,11 +307,9 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 				exitCode = -1
 			}
 			if ctx.Err() != nil {
-				logger.Warn(logging.WarnSlowResponse, "opencode timeout/cancelled: pid=%d duration=%s", cmd.Process.Pid, time.Since(startTime))
-				w.send(models.SessionEvent{Type: "error", SessionID: capturedSID, Error: chaterr.UserFacing("process timeout or cancelled")})
+				exitErrMsg = chaterr.UserFacing("process timeout or cancelled")
 			} else {
-				logger.Error(logging.ErrSessionError, "opencode exited with error: pid=%d exit_code=%d err=%v", cmd.Process.Pid, exitCode, err)
-				w.send(models.SessionEvent{Type: "error", SessionID: capturedSID, Error: chaterr.UserFacing(fmt.Sprintf("opencode exited: %v", err))})
+				exitErrMsg = chaterr.UserFacing(fmt.Sprintf("opencode exited: %v", err))
 			}
 		}
 		close(draftStop)
@@ -352,12 +351,19 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 			})
 		}
 
-		if !hadError {
-			w.send(models.SessionEvent{
-				Type:      "done",
-				SessionID: capturedSID,
-				DraftSize: draftSize,
-			})
+		w.send(models.SessionEvent{
+			Type:      "done",
+			SessionID: capturedSID,
+			DraftSize: draftSize,
+		})
+
+		if hadError {
+			if ctx.Err() != nil {
+				logger.Warn(logging.WarnSlowResponse, "opencode timeout/cancelled: pid=%d duration=%s", cmd.Process.Pid, duration)
+			} else {
+				logger.Error(logging.ErrSessionError, "opencode exited with error: pid=%d exit_code=%d", cmd.Process.Pid, exitCode)
+			}
+			w.send(models.SessionEvent{Type: "error", SessionID: capturedSID, Error: exitErrMsg})
 		}
 	}()
 

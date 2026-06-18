@@ -22,6 +22,7 @@ func main() {
 	opencodeBin := flag.String("opencode", "opencode", "Path to opencode binary")
 	model := flag.String("model", "deepseek/deepseek-chat", "Default model")
 	maxConcurrent := flag.Int("max-concurrent", 3, "Max concurrent opencode processes")
+	defaultTimeoutSec := flag.Int("default-timeout-sec", 600, "Default timeout in seconds for each opencode attempt")
 	staleTimeoutMin := flag.Int("stale-timeout-min", 60, "Stale session timeout in minutes")
 	zombieTimeoutMin := flag.Int("zombie-timeout-min", 30, "Timeout in minutes for zombie sessions (GENERATING with zero output)")
 	deepseekAPIKey := flag.String("deepseek-api-key", "", "Optional override for DeepSeek API key (default: read from OPENCODE_CONFIG provider section)")
@@ -35,7 +36,7 @@ func main() {
 		OpenCodeBinary:          *opencodeBin,
 		DefaultModel:            *model,
 		MaxConcurrent:           *maxConcurrent,
-		DefaultTimeoutSec:       300,
+		DefaultTimeoutSec:       *defaultTimeoutSec,
 		MaxMessagesPerEpoch:     40,
 		MaxTokensPerEpoch:       60000,
 		StaleTimeoutMin:         *staleTimeoutMin,
@@ -55,6 +56,7 @@ func main() {
 	log.Printf("  OpenCode:       %s", cfg.OpenCodeBinary)
 	log.Printf("  Model:          %s", cfg.DefaultModel)
 	log.Printf("  Max workers:    %d", cfg.MaxConcurrent)
+	log.Printf("  Timeout:        %d sec", cfg.DefaultTimeoutSec)
 	log.Printf("  Stale timeout:  %d min", cfg.StaleTimeoutMin)
 	log.Printf("  Zombie timeout: %d min", cfg.ZombieSessionTimeoutMin)
 	log.Printf("  Debug logs:     %v", cfg.Debug)

@@ -603,6 +603,7 @@ async function tryFetchFanqieProfile() {
 // 辅助：获取七猫作者资料（/api/author/profile）
 // ─────────────────────────────────────────────
 const QIMAO_PROFILE_URL = 'https://zuozhe.qimao.com/api/author/profile';
+const QIMAO_USER_INFO_URL = 'https://zuozhe.qimao.com/api/pc/v3/user/info';
 
 async function tryFetchQimaoProfile() {
   if (!state.targetTabId) return null;
@@ -610,24 +611,46 @@ async function tryFetchQimaoProfile() {
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId: state.targetTabId },
-      func: async (profileUrl) => {
+      func: async (profileUrl, userInfoUrl) => {
         const parseRealStatus = (v) => v === 1 || v === '1';
         const resp = await fetch(profileUrl, { credentials: 'include' });
         if (!resp.ok) return null;
         const json = await resp.json();
         if (json?.code !== 200 || !json?.data?.user) return null;
         const u = json.data.user;
-        const isAuth = parseRealStatus(u.real_status);
+
+        let isAuth = parseRealStatus(u.real_status);
+        let identityCodeMask = null;
+
+        try {
+          const infoResp = await fetch(userInfoUrl, {
+            credentials: 'include',
+            headers: { Accept: 'application/json, text/plain, */*' },
+          });
+          if (infoResp.ok) {
+            const infoJson = await infoResp.json();
+            const realStatus = infoJson?.data?.real_status;
+            if (realStatus?.full === true) {
+              isAuth = true;
+              const value = typeof realStatus.value === 'string' ? realStatus.value.trim() : '';
+              identityCodeMask = value || null;
+            } else {
+              isAuth = false;
+              identityCodeMask = null;
+            }
+          }
+        } catch (_) {}
+
         return {
           author_name: u.pen_name || null,
           phone_number: u.phone || null,
           avatar_url: u.avatar || null,
           is_auth: isAuth,
-          identity_code_mask: null,
+          identity_code_mask: identityCodeMask,
           identity_name_mask: null,
         };
       },
-      args: [QIMAO_PROFILE_URL],
+      args: [QIMAO_PROFILE_URL, QIMAO_USER_INFO_URL],
     });
     return results?.[0]?.result || null;
   } catch (e) {

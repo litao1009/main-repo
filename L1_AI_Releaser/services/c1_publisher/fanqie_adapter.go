@@ -156,7 +156,7 @@ func (a *FanqiePublishAdapter) Publish(ctx context.Context, product ProductConte
 	if title == "" {
 		title = firstLine(product.Text, 50)
 	}
-	novelName := product.NovelName
+	novelName := sanitizeNovelName(product.NovelName)
 	if novelName == "" {
 		novelName = "未命名作品"
 	}
@@ -187,6 +187,7 @@ func (a *FanqiePublishAdapter) SaveDraft(ctx context.Context, title, content, no
 	if novelName == "" {
 		return a.fail(ErrCodeInputInvalid, "fanqie: novelName is empty", "")
 	}
+	novelName = sanitizeNovelName(novelName)
 	if title == "" {
 		title = firstLine(content, 50)
 	}
@@ -211,6 +212,7 @@ func (a *FanqiePublishAdapter) PublishDraft(ctx context.Context, draftTitle, nov
 	if novelName == "" {
 		return a.fail(ErrCodeInputInvalid, "fanqie: novelName is empty", "")
 	}
+	novelName = sanitizeNovelName(novelName)
 	if volumeName == "" {
 		volumeName = "第一卷"
 	}
@@ -261,6 +263,8 @@ func (a *FanqiePublishAdapter) SaveDraftViaPageAPI(ctx context.Context, title, c
 		return a.fail(ErrCodeInputInvalid, "fanqie: workId is empty", "")
 	}
 
+	novelName = sanitizeNovelName(novelName)
+
 	input := fanqieInput{
 		Action:        "save_draft_api",
 		Title:         title,
@@ -283,6 +287,7 @@ func (a *FanqiePublishAdapter) GetPlatformInfo(ctx context.Context, novelName, c
 	if novelName == "" {
 		return nil, a.fail(ErrCodeInputInvalid, "fanqie: novelName is empty", "")
 	}
+	novelName = sanitizeNovelName(novelName)
 
 	input := fanqieInput{
 		Action:    "get_platform_info",
@@ -382,6 +387,7 @@ func (a *FanqiePublishAdapter) ResolveAuthorName(ctx context.Context, cookie str
 
 // SetBookInfo 上传封面并设置书籍信息（仅番茄平台新书创建后调用）。
 func (a *FanqiePublishAdapter) SetBookInfo(ctx context.Context, cookie, workId, name, description, category, roles string, coverBytes []byte) *PublishResult {
+	name = sanitizeNovelName(name)
 	input := fanqieInput{
 		Action:      "set_book_info",
 		Name:        name,
@@ -643,6 +649,22 @@ func classifyFanqieError(errMsg string) string {
 	default:
 		return ErrCodePlatformError
 	}
+}
+
+func sanitizeNovelName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || (r >= 0x4e00 && r <= 0x9fff) ||
+			r == ' ' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	cleaned := strings.TrimSpace(b.String())
+	if cleaned == "" {
+		cleaned = "未命名作品"
+	}
+	return cleaned
 }
 
 func truncateStr(s string, max int) string {
