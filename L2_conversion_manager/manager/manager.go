@@ -38,19 +38,21 @@ type Config struct {
 	ZombieSessionTimeoutMin  int
 	DeepseekAPIKey           string
 	SkillRegistryURL         string
+	Debug                    bool
 }
 
 func DefaultConfig() Config {
 	return Config{
 		DataDir:                 "/tmp/session_manager",
 		OpenCodeBinary:          "opencode",
-		DefaultModel:            "team-deepseek/deepseek-chat",
+		DefaultModel:            "deepseek/deepseek-chat",
 		MaxConcurrent:           3,
 		DefaultTimeoutSec:       300,
 		MaxMessagesPerEpoch:     40,
 		MaxTokensPerEpoch:       60000,
 		StaleTimeoutMin:         60,
 		ZombieSessionTimeoutMin: 30,
+		Debug:                   false,
 	}
 }
 
@@ -107,7 +109,7 @@ func New(cfg Config) (*SessionManager, error) {
 		cfg.OpenCodeBinary = "opencode"
 	}
 	if cfg.DefaultModel == "" {
-		cfg.DefaultModel = "team-deepseek/deepseek-chat"
+		cfg.DefaultModel = "deepseek/deepseek-chat"
 	}
 	if cfg.MaxConcurrent == 0 {
 		cfg.MaxConcurrent = 3
@@ -345,13 +347,8 @@ func (sm *SessionManager) normalizeModel(model string) string {
 		model = sm.cfg.DefaultModel
 	}
 	model = strings.TrimPrefix(model, "team-")
-	switch model {
-	case "hy3/hy3-preview":
+	if model == "hy3/hy3-preview" {
 		model = "opencode/big-pickle"
-	default:
-		if !strings.HasPrefix(model, "team-deepseek/") {
-			model = strings.Replace(model, "deepseek/", "team-deepseek/", 1)
-		}
 	}
 	return model
 }
@@ -789,6 +786,7 @@ func (sm *SessionManager) runSessionLoop(ctx context.Context, sessionID, taskID,
 		Timeout:        timeout,
 		ConfigPath:     sm.configPath,
 		DeepseekAPIKey: apiKey,
+		Debug:          sm.cfg.Debug,
 	}
 
 	msgCount := 0
@@ -1133,10 +1131,10 @@ func (sm *SessionManager) readActiveAPIKey(model string) (key, source string) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return "", "invalid_config"
 	}
-	if p, ok := cfg.Provider["team-deepseek"]; ok && p.APIKey != "" {
+	if p, ok := cfg.Provider["deepseek"]; ok && p.APIKey != "" {
 		return p.APIKey, "L1_AI_Provider_config"
 	}
-	return "", "no_team-deepseek_provider"
+	return "", "no_deepseek_provider"
 }
 
 func (sm *SessionManager) logSessionCostStart(logger *logging.Logger, sessionID, taskID, model, keyFull, keySource string) time.Time {
@@ -1298,6 +1296,7 @@ func (sm *SessionManager) generateMediumSummary(taskID, sessionID string, task *
 		Timeout:        120 * time.Second,
 		ConfigPath:     sm.configPath,
 		DeepseekAPIKey: summaryKey,
+		Debug:          sm.cfg.Debug,
 	}
 
 	events, err := sm.runner.Run(summaryCtx, opts)
@@ -1479,7 +1478,9 @@ func (sm *SessionManager) WakeTask(ctx context.Context, taskID string, req model
 		msg = adapter.BuildStartMessage(novelName, skill, req.Text, chapterNum)
 	}
 
-	adapter.WritePromptDebugLog(cwd, skill, msg)
+	if sm.cfg.Debug {
+		adapter.WritePromptDebugLog(cwd, skill, msg)
+	}
 
 	go sm.runSessionLoop(context.Background(), sessionID, taskID, cwd, model, msg, "")
 

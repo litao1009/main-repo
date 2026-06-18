@@ -40,24 +40,24 @@ const BIND_PLATFORM_OPTIONS = [
   { value: "zhulang", label: "逐浪网",   bg: "bg-blue-50",  text: "text-blue-500",  char: "逐" },
 ] as const
 
-const PROFILE_PLATFORMS = new Set<string>(['fanqie', 'zhulang', 'qimao'])
+import {
+  isBetaLimitsEnabled,
+  isPlatformAccountLimitReached as isPlatformAtLimit,
+  platformAccountLimitMessage as formatPlatformAccountLimitMessage,
+} from "@/lib/product-limits"
 
-/** 本版本限制：每个平台最多绑定 1 个账号 */
-const MAX_ACCOUNTS_PER_PLATFORM = 1
+const PROFILE_PLATFORMS = new Set<string>(['fanqie', 'zhulang', 'qimao'])
 
 function countPlatformAccounts(accounts: AccountSummary[], plt: string): number {
   return accounts.filter((a) => a.platform === plt).length
 }
 
 function isPlatformAccountLimitReached(accounts: AccountSummary[], plt: string): boolean {
-  return countPlatformAccounts(accounts, plt) >= MAX_ACCOUNTS_PER_PLATFORM
+  return isPlatformAtLimit(countPlatformAccounts(accounts, plt))
 }
 
 function platformAccountLimitMessage(plt: string): string {
-  const label = PLATFORM_LABELS[plt] || plt
-  return MAX_ACCOUNTS_PER_PLATFORM === 1
-    ? `${label}已绑定账号，每个平台只能绑定 1 个`
-    : `${label}最多绑定 ${MAX_ACCOUNTS_PER_PLATFORM} 个账号`
+  return formatPlatformAccountLimitMessage(plt, PLATFORM_LABELS)
 }
 
 /** 支持 Cookie 注入并打开作家后台的平台 */
@@ -946,7 +946,9 @@ export default function AccountsPage() {
                   </span>
                 ) : (
                   <span className="text-slate-400">
-                    每个平台只能绑定 1 个账号 · 选中平台后点击下方按钮，将在新窗口打开登录页
+                    {isBetaLimitsEnabled()
+                      ? "每个平台只能绑定 1 个账号 · 选中平台后点击下方按钮，将在新窗口打开登录页"
+                      : "选中平台后点击下方按钮，将在新窗口打开登录页"}
                   </span>
                 )}
               </p>

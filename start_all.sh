@@ -76,7 +76,8 @@ export A1_DB_HOST="${A1_DB_HOST:-127.0.0.1}"
 export A1_DB_NAME="${A1_DB_NAME:-xlongxia}"
 export A1_JWT_SECRET="${A1_JWT_SECRET:-not-default-secret-change-me}"
 export JWT_SECRET="${JWT_SECRET:-not-default-secret-change-me}"
-export TEAM_DEEPSEEK_API_KEY="${TEAM_DEEPSEEK_API_KEY:-}"
+# DEEPSEEK_API_KEY — 标准名；TEAM_DEEPSEEK_API_KEY — 旧名（向后兼容）
+export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-${TEAM_DEEPSEEK_API_KEY:-}}"
 
 export PORT="${PORT:-8088}"
 export SESSION_MGR_URL="${SESSION_MGR_URL:-http://localhost:18080}"
@@ -341,6 +342,53 @@ cleanup_frontend() {
     sudo rm -f /tmp/fe.log 2>/dev/null || true
 }
 
+# 等待 Next.js 就绪：先看日志 Ready，再 curl 验证（dev 冷启动可能 >5s）
+wait_for_frontend_ready() {
+    local fe_mode="$1"
+    local fe_pid="$2"
+    local max_wait="${FE_STARTUP_TIMEOUT:-60}"
+    local interval=2
+    local elapsed=0
+
+    if [ "$fe_mode" = "start" ]; then
+        max_wait="${FE_STARTUP_TIMEOUT:-30}"
+    fi
+
+    log "  等待 Frontend 就绪（最多 ${max_wait}s，模式: ${fe_mode}）..."
+
+    while [ "$elapsed" -lt "$max_wait" ]; do
+        if ! kill -0 "$fe_pid" 2>/dev/null; then
+            fail "Frontend 进程已退出（详见 /tmp/fe.log）"
+            return 1
+        fi
+
+        if grep -q "EADDRINUSE" /tmp/fe.log 2>/dev/null; then
+            fail "Frontend 启动失败：端口 :${FE_PORT} 被占用（详见 /tmp/fe.log）"
+            return 1
+        fi
+
+        if grep -qE "Failed to compile|Error: listen EADDRINUSE|Cannot find module" /tmp/fe.log 2>/dev/null; then
+            fail "Frontend 启动失败（详见 /tmp/fe.log）"
+            return 1
+        fi
+
+        local log_ready=0
+        if grep -qE "Ready|ready|started server|Listening on" /tmp/fe.log 2>/dev/null; then
+            log_ready=1
+        fi
+
+        if [ "$log_ready" -eq 1 ] && curl -s -o /dev/null --max-time 5 "http://127.0.0.1:${FE_PORT}/" 2>/dev/null; then
+            return 0
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+
+    fail "Frontend 启动超时 (${max_wait}s，模式: ${fe_mode}，详见 /tmp/fe.log)"
+    return 1
+}
+
 # ========== 清理旧进程 ==========
 cleanup_old() {
     log "清理旧进程..."
@@ -355,26 +403,23 @@ cleanup_old() {
 check_prereq() {
     log "前置检查..."
 
-    # --- TEAM_DEEPSEEK_API_KEY ---
-    # 注意: 这个环境变量名称是 opencode CLI 和 session_manager 代码中硬编码的，
-    # 不是由当前机器环境决定的。任何机器上都必须使用这个名称。
-    # 作用: opencode CLI 调用 DeepSeek API 的认证密钥。
-    # 链路: start_all.sh export → sudo -E 传递 → session_manager --deepseek-api-key → opencode 子进程 → DeepSeek API
-    # 不设置则 opencode 无法认证，AI 写稿核心功能完全不可用。
-    if [ -z "${TEAM_DEEPSEEK_API_KEY:-}" ]; then
-        fail "TEAM_DEEPSEEK_API_KEY 未设置"
+    # --- DEEPSEEK_API_KEY ---
+    # 作用: 调用 DeepSeek API 的认证密钥
+    # 链路: start_all.sh → session_manager --deepseek-api-key → opencode 子进程 → DeepSeek API
+    # 兼容旧变量名 TEAM_DEEPSEEK_API_KEY
+    if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+        fail "DEEPSEEK_API_KEY 未设置"
         echo "       ┌─────────────────────────────────────────────────────────────┐"
-        echo "       │  变量名: TEAM_DEEPSEEK_API_KEY (写死在 opencode/session_mgr 代码中)  │"
-        echo "       │  作用:   opencode AI 写作引擎调用 DeepSeek API 的认证密钥        │"
-        echo "       │  链路:   脚本 → sudo -E → session_manager → opencode → DeepSeek│"
-        echo "       │  无此 Key = AI 写稿功能完全不可用                              │"
+        echo "       │  变量名: DEEPSEEK_API_KEY                                    │"
+        echo "       │  作用:   AI 写作引擎调用 DeepSeek API 的认证密钥              │"
+        echo "       │  链路:   脚本 → session_manager → opencode → DeepSeek API    │"
+        echo "       │  无此 Key = AI 写稿功能完全不可用                            │"
         echo "       │                                                             │"
         echo "       │  获取: https://platform.deepseek.com → API Keys             │"
-        echo "       │  设置: export TEAM_DEEPSEEK_API_KEY=sk-xxxxxxxx              │"
-        echo "       │        (必须是这个变量名，不能改)                              │"
+        echo "       │  设置: export DEEPSEEK_API_KEY=sk-xxxxxxxx                  │"
         echo "       └─────────────────────────────────────────────────────────────┘"
     else
-        ok "TEAM_DEEPSEEK_API_KEY 已设置 (长度=${#TEAM_DEEPSEEK_API_KEY})"
+        ok "DEEPSEEK_API_KEY 已设置 (长度=${#DEEPSEEK_API_KEY})"
     fi
 
     # Go 版本检查
@@ -609,7 +654,7 @@ start_session_manager() {
         --max-concurrent 2 \
         --stale-timeout-min 60 \
         --skill-registry http://localhost:18090 \
-        --deepseek-api-key "${TEAM_DEEPSEEK_API_KEY:-}" \
+        --deepseek-api-key "${DEEPSEEK_API_KEY:-}" \
         > /tmp/sm.log 2>&1 &
     sleep 3
     if curl -s --max-time 3 http://127.0.0.1:18080/api/status > /dev/null 2>&1; then
@@ -752,6 +797,11 @@ NEXT_PUBLIC_WS_BASE=
 }
 
 # ============================================================
+# Debug 日志开关
+# ============================================================
+SM_DEBUG_LOGS="${SM_DEBUG_LOGS:-false}"
+
+# ============================================================
 # 大模块6: 前端 (Next.js)
 # ============================================================
 
@@ -785,23 +835,13 @@ start_frontend() {
     fi
 
     setsid bash -c "cd '$FE_DIR' && $fe_cmd" > /tmp/fe.log 2>&1 &
-    sleep 5
+    local fe_pid=$!
 
-    if grep -q "EADDRINUSE" /tmp/fe.log 2>/dev/null; then
-        fail "Frontend 启动失败：端口 :${FE_PORT} 被占用（详见 /tmp/fe.log）"
+    if wait_for_frontend_ready "$fe_mode" "$fe_pid"; then
+        ok "Frontend :${FE_PORT} ($fe_mode)"
+    else
         return 1
     fi
-
-    if ! curl -s --max-time 3 "http://127.0.0.1:${FE_PORT}" > /dev/null 2>&1; then
-        fail "Frontend 启动失败 ($fe_mode，可能仍在编译中，请稍等或查看 /tmp/fe.log)"
-        return 1
-    fi
-
-    if ! grep -qE "Ready|Starting" /tmp/fe.log 2>/dev/null; then
-        warn "  /tmp/fe.log 未见 Ready 标记，若页面异常请查看日志"
-    fi
-
-    ok "Frontend :${FE_PORT} ($fe_mode)"
 }
 
 # ============================================================
@@ -809,10 +849,37 @@ start_frontend() {
 # ============================================================
 
 main() {
+    # ---------- 参数解析 ----------
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --debug)
+                SM_DEBUG_LOGS=true
+                shift
+                ;;
+            -h|--help)
+                echo "用法: bash start_all.sh [--debug]"
+                echo ""
+                echo "  --debug    启用调试日志，在各任务 CWD 下保存 prompt_debug.log 和 api_trace.jsonl"
+                echo "             opencode 进程将输出 DEBUG 级别日志"
+                echo "  -h, --help 显示此帮助信息"
+                exit 0
+                ;;
+            *)
+                echo "未知参数: $1"
+                echo "用法: bash start_all.sh [--debug]"
+                exit 1
+                ;;
+        esac
+    done
+    # ---------- 参数解析结束 ----------
+
     echo ""
     echo -e "${CYAN}========================================${NC}"
     echo -e "${CYAN}  全模块后端 + 前端服务启动脚本${NC}"
     echo -e "${CYAN}    运行用户: $RUN_USER${NC}"
+    if [ "$SM_DEBUG_LOGS" = "true" ]; then
+        echo -e "${YELLOW}    Debug 日志模式已启用${NC}"
+    fi
     echo -e "${CYAN}========================================${NC}"
     echo ""
 

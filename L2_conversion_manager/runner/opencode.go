@@ -61,6 +61,7 @@ type RunOptions struct {
 	Timeout        time.Duration
 	ConfigPath     string
 	DeepseekAPIKey string
+	Debug          bool
 }
 
 func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan models.SessionEvent, error) {
@@ -83,10 +84,11 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 			"run",
 			"--format", "json",
 			"--thinking",
-			"--print-logs",
-			"--log-level", "DEBUG",
 			"--model", opts.Model,
 			"--dir", opts.CWD,
+		}
+		if opts.Debug {
+			args = append(args, "--print-logs", "--log-level", "DEBUG")
 		}
 		if opts.SessionID != "" {
 			args = append(args, "--session", opts.SessionID)
@@ -107,14 +109,22 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 			cmd.Env = append(cmd.Env, "OPENCODE_CONFIG="+opts.ConfigPath)
 		}
 		if opts.DeepseekAPIKey != "" {
-			cmd.Env = append(cmd.Env, "TEAM_DEEPSEEK_API_KEY="+opts.DeepseekAPIKey)
+			cmd.Env = append(cmd.Env, "DEEPSEEK_API_KEY="+opts.DeepseekAPIKey)
 		}
 
 		logger.Info("opencode launch: cwd=%s model=%s session_id=%s msg_len=%d config_path=%s deepseek_key_set=%v binary=%s",
 			opts.CWD, opts.Model, opts.SessionID, len(opts.Message), opts.ConfigPath, opts.DeepseekAPIKey != "", r.binaryPath)
-		logger.Info("========== PROMPT DEBUG START (full message to opencode) ==========")
-		logger.Info("opencode message (%d chars):\n%s", len(opts.Message), opts.Message)
-		logger.Info("========== PROMPT DEBUG END ==========")
+		if opts.Debug {
+			logger.Info("========== PROMPT DEBUG START (full message to opencode) ==========")
+			logger.Info("opencode message (%d chars):\n%s", len(opts.Message), opts.Message)
+			logger.Info("========== PROMPT DEBUG END ==========")
+		} else {
+			msgPreview := opts.Message
+			if len(msgPreview) > 300 {
+				msgPreview = msgPreview[:300] + "..."
+			}
+			logger.Info("opencode message: %s", msgPreview)
+		}
 		if entries, err := os.ReadDir(opts.CWD); err == nil {
 			names := make([]string, 0, len(entries))
 			for _, e := range entries {
@@ -186,10 +196,13 @@ func (r *OpenCodeRunner) Run(ctx context.Context, opts RunOptions) (<-chan model
 		go func() {
 			defer close(stdoutDone)
 
-			tracePath := filepath.Join(opts.CWD, "api_trace.jsonl")
-			traceFile, _ := os.Create(tracePath)
-			if traceFile != nil {
-				defer traceFile.Close()
+			var traceFile *os.File
+			if opts.Debug {
+				tracePath := filepath.Join(opts.CWD, "api_trace.jsonl")
+				traceFile, _ = os.Create(tracePath)
+				if traceFile != nil {
+					defer traceFile.Close()
+				}
 			}
 
 			scanner := bufio.NewScanner(stdout)

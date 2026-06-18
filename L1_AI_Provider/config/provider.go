@@ -64,16 +64,16 @@ type builtinDef struct {
 var builtinProviders = []builtinDef{
 	{
 		Key:       "deepseek",
-		ConfigKey: "team-deepseek",
+		ConfigKey: "deepseek",
 		BaseURL:   "https://api.deepseek.com/v1",
-		EnvVars:   []string{"DEEPSEEK_API_KEY", "TEAM_DEEPSEEK_API_KEY"},
+		EnvVars:   []string{"DEEPSEEK_API_KEY"},
 		MaxTokens: 8192,
 	},
 	{
 		Key:       "hy3",
-		ConfigKey: "team-hy3",
+		ConfigKey: "hy3",
 		BaseURL:   "https://api.hy3-preview.tencent.com/v1",
-		EnvVars:   []string{"HY3_API_KEY", "TEAM_HY3_API_KEY"},
+		EnvVars:   []string{"HY3_API_KEY"},
 		MaxTokens: 4096,
 	},
 }
@@ -224,10 +224,6 @@ func (m *Manager) buildModelCatalog() {
 			continue
 		}
 		if _, ok := m.config.Provider[bm.Provider]; ok {
-			m.models = append(m.models, bm)
-			continue
-		}
-		if _, ok := m.config.Provider["team-"+bm.Provider]; ok {
 			m.models = append(m.models, bm)
 		}
 	}

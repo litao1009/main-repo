@@ -95,6 +95,80 @@ func Forward(c *gin.Context, upstreamURL string, bodyData map[string]interface{}
 	return respBody, resp.StatusCode, nil
 }
 
+// UpstreamGetResult 保留上游 GET 响应的状态码与头，供静态资源代理做协商缓存。
+type UpstreamGetResult struct {
+	Body       []byte
+	StatusCode int
+	Header     http.Header
+}
+
+var conditionalGetHeaders = []string{
+	"If-None-Match",
+	"If-Modified-Since",
+	"If-Match",
+	"If-Unmodified-Since",
+}
+
+func ForwardGetUpstream(c *gin.Context, upstreamURL string) (*UpstreamGetResult, error) {
+	logger := middleware.GetBFFLogger(c)
+
+	if c.Request.URL.RawQuery != "" && !strings.Contains(upstreamURL, "?") {
+		upstreamURL += "?" + c.Request.URL.RawQuery
+	}
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, upstreamURL, nil)
+	if err != nil {
+		if logger != nil {
+			logger.Error(logging.ErrProxyError, "创建下游请求失败: GET %s — %v", upstreamURL, err)
+		}
+		return nil, err
+	}
+
+	injectProxyHeaders(c, req, nil)
+	for _, name := range conditionalGetHeaders {
+		if value := c.GetHeader(name); value != "" {
+			req.Header.Set(name, value)
+		}
+	}
+
+	start := time.Now()
+	resp, err := httpClient.Do(req)
+	duration := time.Since(start)
+	if err != nil {
+		if logger != nil {
+			logger.LogProxyCall(upstreamURL, "GET", nil, 0, nil, duration, err)
+		}
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotModified {
+		if logger != nil {
+			logger.LogProxyCall(upstreamURL, "GET", nil, resp.StatusCode, nil, duration, nil)
+		}
+		return &UpstreamGetResult{
+			StatusCode: resp.StatusCode,
+			Header:     resp.Header.Clone(),
+		}, nil
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		if logger != nil {
+			logger.LogProxyCall(upstreamURL, "GET", nil, resp.StatusCode, respBody, duration, err)
+		}
+		return nil, err
+	}
+
+	if logger != nil {
+		logger.LogProxyCall(upstreamURL, "GET", nil, resp.StatusCode, respBody, duration, nil)
+	}
+	return &UpstreamGetResult{
+		Body:       respBody,
+		StatusCode: resp.StatusCode,
+		Header:     resp.Header.Clone(),
+	}, nil
+}
+
 func ForwardGet(c *gin.Context, upstreamURL string) ([]byte, int, error) {
 	logger := middleware.GetBFFLogger(c)
 

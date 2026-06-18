@@ -12,9 +12,7 @@ import { formatRelativeTime, formatDate } from "@/lib/utils"
 import { Loader2, AlertCircle, Eye, EyeOff, Minus, Plus, Settings2, UserPlus, UserCog, User, Shield, Phone, KeyRound } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { sanitizeUsernameInput, validateUsername, USERNAME_HINT, USERNAME_MAX_LEN } from "@/lib/username"
-
-/** 内测限制：管理员 + 普通用户合计最多 7 个 */
-const MAX_USERS = 7
+import { isUserLimitReached, PROD_MAX_USERS } from "@/lib/product-limits"
 
 /** 仅本地开发（npm run dev）展示自动发布并发配置；生产构建（npm run start）隐藏 */
 const SHOW_AUTO_PUBLISH_CONCURRENCY = process.env.NODE_ENV === "development"
@@ -111,7 +109,7 @@ export default function AdminUsersPage() {
   }, [loadSlots])
 
   const getInitials = (name: string) => name.slice(0, 2).toUpperCase()
-  const userLimitReached = total >= MAX_USERS
+  const userLimitReached = isUserLimitReached(total)
 
   return (
     <div className="max-w-7xl mx-auto px-6 pt-6">
@@ -125,14 +123,14 @@ export default function AdminUsersPage() {
         <button
           onClick={() => {
             if (userLimitReached) {
-              toast.error(`最多只能添加 ${MAX_USERS} 个用户（含管理员与普通用户）`)
+              toast.error(`最多只能添加 ${PROD_MAX_USERS} 个用户（含管理员与普通用户）`)
               return
             }
             setShowCreate(true)
           }}
           disabled={userLimitReached}
           data-tour="admin-invite"
-          title={userLimitReached ? `已达 ${MAX_USERS} 人上限` : undefined}
+          title={userLimitReached ? `已达 ${PROD_MAX_USERS} 人上限` : undefined}
           className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 shadow-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-slate-900"
         >
           + 邀请新用户
@@ -609,7 +607,7 @@ function CreateUserModal({
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     if (userLimitReached) {
-      toast.error(`最多只能添加 ${MAX_USERS} 个用户（含管理员与普通用户）`)
+      toast.error(`最多只能添加 ${PROD_MAX_USERS} 个用户（含管理员与普通用户）`)
       return
     }
     const usernameError = validateUsername(username)

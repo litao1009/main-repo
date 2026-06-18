@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -118,19 +120,67 @@ func AccountProxyPost(accountURL string) gin.HandlerFunc {
 	}
 }
 
+const coverCacheControl = "public, max-age=604800, immutable"
+
+func coverWeakETag(body []byte) string {
+	sum := sha256.Sum256(body)
+	return `W/"` + hex.EncodeToString(sum[:16]) + `"`
+}
+
+func coverETagMatches(ifNoneMatch, etag string) bool {
+	for _, part := range strings.Split(ifNoneMatch, ",") {
+		if strings.TrimSpace(part) == etag {
+			return true
+		}
+	}
+	return false
+}
+
+func writeCoverCacheHeaders(c *gin.Context, hdr http.Header, body []byte) string {
+	c.Header("Cache-Control", coverCacheControl)
+
+	etag := hdr.Get("ETag")
+	if etag == "" && len(body) > 0 {
+		etag = coverWeakETag(body)
+	}
+	if etag != "" {
+		c.Header("ETag", etag)
+	}
+	if lastModified := hdr.Get("Last-Modified"); lastModified != "" {
+		c.Header("Last-Modified", lastModified)
+	}
+	return etag
+}
+
 func CoverProxy(skillURL string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		respBody, statusCode, err := proxy.ForwardGet(c, skillURL+c.Request.URL.Path)
+		result, err := proxy.ForwardGetUpstream(c, skillURL+c.Request.URL.Path)
 		if err != nil {
 			model.Error(c, model.ErrUpstreamUnavailable.WithDetail(err.Error()))
 			return
 		}
-		if statusCode >= 300 {
-			c.Status(statusCode)
+		if result.StatusCode == http.StatusNotModified {
+			writeCoverCacheHeaders(c, result.Header, nil)
+			c.Status(http.StatusNotModified)
 			return
 		}
-		c.Header("Content-Type", "image/png")
-		c.Data(200, "image/png", respBody)
+		if result.StatusCode >= 300 {
+			c.Status(result.StatusCode)
+			return
+		}
+
+		etag := writeCoverCacheHeaders(c, result.Header, result.Body)
+		ifNoneMatch := c.GetHeader("If-None-Match")
+		if ifNoneMatch != "" && etag != "" && coverETagMatches(ifNoneMatch, etag) {
+			c.Status(http.StatusNotModified)
+			return
+		}
+
+		contentType := result.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = "image/png"
+		}
+		c.Data(http.StatusOK, contentType, result.Body)
 	}
 }
 

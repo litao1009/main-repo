@@ -34,7 +34,7 @@ func readDeepSeekConfig() (apiKey, baseURL string) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return "", ""
 	}
-	if p, ok := cfg.Provider["team-deepseek"]; ok && p.APIKey != "" {
+	if p, ok := cfg.Provider["deepseek"]; ok && p.APIKey != "" {
 		apiKey = p.APIKey
 		baseURL = p.BaseURL
 	}
