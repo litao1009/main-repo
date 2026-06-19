@@ -247,21 +247,34 @@ func (m *AutoPublishManager) resolveAccounts(uid, role, platform string, account
 			uidForLookup = ""
 		}
 		allUserAccounts := fetchUserAccounts(m.accountURL, uidForLookup, platform)
-		userAccountSet := make(map[string]string)
+		accountByID := make(map[string]accountInfo, len(allUserAccounts))
 		for _, a := range allUserAccounts {
-			userAccountSet[a.AccountID] = a.Platform
+			accountByID[a.AccountID] = a
 		}
 		for _, accID := range accountIDs {
-			accPlatform, ok := userAccountSet[accID]
-			if role != "admin" && !ok {
+			a, ok := accountByID[accID]
+			if !ok {
+				if role == "admin" {
+					return nil, fmt.Errorf("账号 %s 未绑定或不存在", accID)
+				}
 				return nil, fmt.Errorf("账号 %s 不属于当前用户或未绑定", accID)
 			}
-			if !ok {
+			accPlatform := a.Platform
+			if accPlatform == "" {
 				accPlatform = platform
+			}
+			ownerUID := uid
+			if role == "admin" {
+				ownerUID = a.UID
+			} else if a.UID != "" && a.UID != uid {
+				return nil, fmt.Errorf("账号 %s 不属于当前用户或未绑定", accID)
+			}
+			if ownerUID == "" {
+				return nil, fmt.Errorf("账号 %s 归属用户无效", accID)
 			}
 			accounts = append(accounts, map[string]string{
 				"accountId": accID,
-				"uid":       uid,
+				"uid":       ownerUID,
 				"platform":  accPlatform,
 			})
 		}
@@ -275,14 +288,57 @@ func (m *AutoPublishManager) resolveAccounts(uid, role, platform string, account
 			return nil, fmt.Errorf("没有绑定 %s 平台的账号", platform)
 		}
 		for _, a := range realAccounts {
+			ownerUID := uid
+			if role == "admin" {
+				ownerUID = a.UID
+			} else if a.UID != "" {
+				ownerUID = a.UID
+			}
+			if ownerUID == "" {
+				continue
+			}
 			accounts = append(accounts, map[string]string{
 				"accountId": a.AccountID,
-				"uid":       uid,
+				"uid":       ownerUID,
 				"platform":  a.Platform,
 			})
 		}
+		if len(accounts) == 0 {
+			return nil, fmt.Errorf("没有绑定 %s 平台的账号", platform)
+		}
 	}
 	return accounts, nil
+}
+
+// loadStoredAccountBindings 读取入队时持久化的账号绑定；兼容旧版纯 account_id 数组。
+func loadStoredAccountBindings(
+	raw, operatorUID, platform string,
+	resolve func(uid, role, platform string, accountIDs []string) ([]map[string]string, error),
+) ([]map[string]string, error) {
+	if raw == "" {
+		return nil, fmt.Errorf("未配置发布账号")
+	}
+
+	var bindings []map[string]string
+	if err := json.Unmarshal([]byte(raw), &bindings); err == nil && len(bindings) > 0 {
+		if bindings[0]["accountId"] != "" {
+			for i := range bindings {
+				if bindings[i]["accountId"] == "" || bindings[i]["uid"] == "" {
+					return nil, fmt.Errorf("账号绑定数据无效")
+				}
+				if bindings[i]["platform"] == "" {
+					bindings[i]["platform"] = platform
+				}
+			}
+			return bindings, nil
+		}
+	}
+
+	var legacyIDs []string
+	if err := json.Unmarshal([]byte(raw), &legacyIDs); err != nil || len(legacyIDs) == 0 {
+		return nil, fmt.Errorf("账号绑定数据无效")
+	}
+	return resolve(operatorUID, "user", platform, legacyIDs)
 }
 
 // ========== HTTP Handlers ==========

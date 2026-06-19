@@ -72,6 +72,7 @@ func CreateTask(sessionMgrURL string, autoPubMgr *AutoPublishManager, taskMgr *T
 		}
 
 		autoPublishStarted := false
+		var autoPublishError string
 		if req.IsAutoPublish {
 			autoReq := model.AutoPublishStartReq{
 				TaskID:    taskID,
@@ -85,25 +86,31 @@ func CreateTask(sessionMgrURL string, autoPubMgr *AutoPublishManager, taskMgr *T
 			if taskMgr != nil {
 				if _, err := taskMgr.CreateTask(uid.(string), role.(string), autoReq); err != nil {
 					log.Printf("[create_task] task=%s 入队失败: %v", taskID, err)
+					autoPublishError = err.Error()
 				} else {
 					autoPublishStarted = true
 				}
 			} else if autoPubMgr != nil {
 				if err := autoPubMgr.StartAutoPublishInternal(uid.(string), role.(string), autoReq); err != nil {
 					log.Printf("[create_task] task=%s 自动发布启动失败: %v", taskID, err)
+					autoPublishError = err.Error()
 				} else {
 					autoPublishStarted = true
 				}
 			}
 		}
 
-		model.Success(c, gin.H{
+		resp := gin.H{
 			"task_id":              taskID,
 			"trace_id":             tid,
 			"uid":                  uid,
 			"is_auto_publish":      req.IsAutoPublish,
 			"auto_publish_started": autoPublishStarted,
-		})
+		}
+		if autoPublishError != "" {
+			resp["auto_publish_error"] = autoPublishError
+		}
+		model.Success(c, resp)
 	}
 }
 

@@ -12,6 +12,14 @@ import { TAG_CATEGORIES, buildPrompt } from "@/lib/tags"
 import type { TagItem, TagCategoryKey } from "@/lib/tags"
 import { cn, normalizeFanqieAvatarUrl } from "@/lib/utils"
 import { buildTaskDetailHref } from "@/lib/task-navigation"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 type SelectedTags = Record<TagCategoryKey, TagItem[]>
 function getEmptySelection(): SelectedTags { return { main: [], theme: [], role: [], plot: [] } }
@@ -274,6 +282,81 @@ export default function NewTaskPage() {
     if (!selectedAccountId) { toast.error("请选择发布账号"); return }
     if (!selectedSkillId) { toast.error("请选择创作方案"); return }
     setConfirmOpen(true)
+  }
+
+  const confirmSkill = skills.find(s => s.skill_id === selectedSkillId)
+  const confirmAccount = accounts.find(a => a.account_id === selectedAccountId)
+  const confirmModel = models.find(m => m.id === modelId)
+  const confirmPlatform = PLATFORM_OPTS.find(p => p.value === platform) ?? PLATFORM_OPTS[0]
+
+  const handleConfirmCreate = async () => {
+    if (creatingLock.current) return
+    creatingLock.current = true
+    const skill = skills.find(s => s.skill_id === selectedSkillId)
+    if (!skill) {
+      toast.error("请选择创作方案")
+      creatingLock.current = false
+      return
+    }
+    setConfirmOpen(false)
+    setSubmitting(true)
+    try {
+      const prompt = isAuto ? (topic.trim() || "全自动创作") : buildPrompt(selectedTags, topic)
+      const taskResp = await createTask({
+        platform,
+        account_ids: [selectedAccountId],
+        skill_id: selectedSkillId,
+        model: modelId,
+        is_auto_publish: isAuto,
+        name: skill.name,
+        description: skill.description,
+        category: skill.category,
+        cover_image: skill.cover_image,
+      })
+      const taskId = taskResp.data?.task_id
+      if (!taskId) throw new Error("创建任务失败：未返回 task_id")
+
+      if (isAuto) {
+        if (taskResp.data?.auto_publish_started === false) {
+          toast.error(
+            taskResp.data?.auto_publish_error
+              ? `任务已创建，但未能加入发布队列：${taskResp.data.auto_publish_error}`
+              : "任务已创建，但未能加入发布队列",
+          )
+          return
+        }
+        router.replace(buildTaskDetailHref(taskId, { platform, from: "new" }))
+        return
+      }
+
+      let session
+      try {
+        session = await createSession({
+          task_id: taskId,
+          skillId: selectedSkillId,
+          model: modelId,
+          topic: prompt,
+          platform,
+          accountId: selectedAccountId,
+          novel_name: skill.name,
+        })
+      } catch (err: unknown) {
+        if (err instanceof Error && err.message) {
+          const match = err.message.match(/existing_session_id[": ]+([a-z0-9]+)/)
+          if (match?.[1]) {
+            router.replace(buildTaskDetailHref(taskId, { sid: match[1], platform, from: "new" }))
+            return
+          }
+        }
+        throw err
+      }
+      router.replace(buildTaskDetailHref(taskId, { sid: session.session_id, platform, from: "new" }))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "创建任务失败")
+    } finally {
+      setSubmitting(false)
+      creatingLock.current = false
+    }
   }
 
   const renderTagGrid = (catKey: TagCategoryKey) => {
@@ -612,91 +695,82 @@ export default function NewTaskPage() {
       </form>
     </div>
 
-      {confirmOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setConfirmOpen(false)}>
-          <div className="bg-white rounded-xl p-6 max-w-sm mx-4 shadow-xl w-full" onClick={e => e.stopPropagation()}>
-            <h3 className="text-lg font-bold text-slate-900 text-center mb-2">确认创建任务</h3>
-            <p className="text-sm text-slate-600 text-center mb-5">确认后将根据所选方案和配置开始创作，是否继续？</p>
-            <div className="flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => setConfirmOpen(false)}
-                className="px-4 py-2 text-sm text-slate-500 hover:text-slate-700 transition-colors"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                onClick={async (e) => {
-                  if (creatingLock.current) return
-                  creatingLock.current = true
-                  ;(e.currentTarget as HTMLButtonElement).disabled = true
-                  const skill = skills.find(s => s.skill_id === selectedSkillId)
-                  if (!skill) { toast.error("请选择创作方案"); creatingLock.current = false; return }
-                  setConfirmOpen(false)
-                  setSubmitting(true)
-                  try {
-                    const prompt = isAuto ? (topic.trim() || "全自动创作") : buildPrompt(selectedTags, topic)
-                    const taskResp = await createTask({
-                      platform,
-                      account_ids: [selectedAccountId],
-                      skill_id: selectedSkillId,
-                      model: modelId,
-                      is_auto_publish: isAuto,
-                      name: skill.name,
-                      description: skill.description,
-                      category: skill.category,
-                      cover_image: skill.cover_image,
-                    })
-                    const taskId = taskResp.data?.task_id
-                    if (!taskId) throw new Error("创建任务失败：未返回 task_id")
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent className="max-w-md gap-0 overflow-hidden p-0 sm:max-w-md">
+          <DialogHeader className="space-y-1 px-6 pb-0 pt-5 text-left">
+            <DialogTitle className="text-base">确认创建任务</DialogTitle>
+            <DialogDescription className="text-sm leading-relaxed">
+              请核对以下信息，确认后将自动加入发布队列并开始创作。
+            </DialogDescription>
+          </DialogHeader>
 
-                    if (isAuto) {
-                      if (taskResp.data?.auto_publish_started === false) {
-                        toast.error("任务已创建，但未能加入发布队列")
-                        return
-                      }
-                      router.replace(buildTaskDetailHref(taskId, { platform, from: "new" }))
-                      return
-                    }
+          <div className="space-y-4 px-6 py-4">
+            {confirmSkill ? (
+              <div className="flex items-start gap-4">
+                <div className="relative aspect-[3/4] w-28 shrink-0 overflow-hidden rounded-lg bg-slate-100 ring-1 ring-slate-200">
+                  <SkillCoverImage src={coverUrl(confirmSkill.cover_image)} alt={confirmSkill.name} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-base font-semibold leading-snug text-slate-900" title={confirmSkill.name}>
+                    {confirmSkill.name}
+                  </p>
+                  {confirmSkill.category ? (
+                    <p className="mt-1 text-xs text-slate-400">{confirmSkill.category}</p>
+                  ) : null}
+                  {confirmSkill.description ? (
+                    <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-slate-500" title={confirmSkill.description}>
+                      {confirmSkill.description}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
 
-                    let session
-                    try {
-                      session = await createSession({
-                        task_id: taskId,
-                        skillId: selectedSkillId,
-                        model: modelId,
-                        topic: prompt,
-                        platform,
-                        accountId: selectedAccountId,
-                        novel_name: skill.name,
-                      })
-                    } catch (err: unknown) {
-                      if (err instanceof Error && err.message) {
-                        const match = err.message.match(/existing_session_id[": ]+([a-z0-9]+)/)
-                        if (match?.[1]) {
-                          router.replace(buildTaskDetailHref(taskId, { sid: match[1], platform, from: "new" }))
-                          return
-                        }
-                      }
-                      throw err
-                    }
-                    router.replace(buildTaskDetailHref(taskId, { sid: session.session_id, platform, from: "new" }))
-                  } catch (err) {
-                    toast.error(err instanceof Error ? err.message : "创建任务失败")
-                  } finally {
-                    setSubmitting(false)
-                    creatingLock.current = false
-                  }
-                }}
-                className="px-6 py-2 text-sm font-medium text-white bg-gradient-to-r from-orange-500 to-red-500 rounded-lg hover:opacity-90 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                确认
-              </button>
+            <div className="space-y-3 rounded-xl border border-slate-100 bg-slate-50 py-3">
+              <div className="flex items-baseline gap-4">
+                <span className="w-28 shrink-0 text-right text-xs text-slate-400">发布平台</span>
+                <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800">{confirmPlatform.label}</span>
+              </div>
+
+              <div className="flex items-baseline gap-4">
+                <span className="w-28 shrink-0 text-right text-xs text-slate-400">发布账号</span>
+                <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800" title={confirmAccount?.masked_display}>
+                  {confirmAccount?.masked_display ?? "—"}
+                  {confirmAccount?.phone_number ? (
+                    <span className="ml-2 text-xs font-normal text-slate-500">{confirmAccount.phone_number}</span>
+                  ) : null}
+                </p>
+              </div>
+
+              <div className="flex items-baseline gap-4">
+                <span className="w-28 shrink-0 text-right text-xs text-slate-400">AI 模型</span>
+                <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800" title={confirmModel?.name}>
+                  {confirmModel?.name ?? "—"}
+                </span>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+
+          <DialogFooter className="flex-row gap-3 border-t border-slate-100 bg-slate-50/80 px-6 py-4 sm:justify-stretch">
+            <button
+              type="button"
+              onClick={() => setConfirmOpen(false)}
+              disabled={submitting}
+              className="flex-1 h-10 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmCreate}
+              disabled={submitting}
+              className="flex-1 h-10 rounded-lg bg-gradient-to-r from-orange-500 to-red-500 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50 transition-opacity inline-flex items-center justify-center gap-1.5 shadow-sm"
+            >
+              {submitting ? <><Loader2 size={14} className="animate-spin" />创建中...</> : "确认创建"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="fixed bottom-0 left-64 right-0 z-10 h-[4.5rem] border-t border-slate-200 bg-white">
         <div className="flex h-full items-center px-8">

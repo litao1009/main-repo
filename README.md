@@ -30,11 +30,11 @@ export PATH=$PATH:/usr/local/go/bin
 此为 opencode AI 写作引擎的唯一认证凭证，变量名不可更改。
 
 ```bash
-export TEAM_DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
+export DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
 
 > 获取: https://platform.deepseek.com → API Keys  
-> 变量名 `TEAM_DEEPSEEK_API_KEY` 硬编码在 session_manager/opencode 代码中，不能改。
+> 变量名 `DEEPSEEK_API_KEY` 是 opencode 的标准环境变量。
 
 ### 3. 创建 AI Provider 密钥文件
 
@@ -88,7 +88,7 @@ sudo bash start_all.sh
 | 提权 | 非 root 自动 `sudo` 切换到 root |
 | 安装 MySQL | 检测缺失则 `yum/apt install mysql-server`，配置 root 密码为 `claw123` |
 | 安装 opencode | 检测缺失则 `npm install -g @anthropic/opencode`（含 Node.js） |
-| 环境检测 | 检查 `TEAM_DEEPSEEK_API_KEY`、`keys.json`、`config.json` 是否存在并提示 |
+| 环境检测 | 检查 `DEEPSEEK_API_KEY`、`keys.json`、`config.json` 是否存在并提示 |
 | 建库建表 | `schema_xlongxia.sql` + `schema_claw_studios.sql`（IF NOT EXISTS，幂等） |
 | 编译 | 8 个 Go 后端 + Next.js 前端 |
 | 启动 | 9 个服务顺序启动 + 健康检查 |
@@ -142,7 +142,7 @@ sudo bash start_all.sh
 ### 必设
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `TEAM_DEEPSEEK_API_KEY` | (空) | DeepSeek API Key，不设 AI 无法工作 |
+| `DEEPSEEK_API_KEY` | (空) | DeepSeek API Key，不设 AI 无法工作 |
 
 ### MySQL 建库认证
 | 变量 | 默认值 | 说明 |

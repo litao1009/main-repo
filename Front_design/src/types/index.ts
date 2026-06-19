@@ -106,6 +106,7 @@ export interface TaskCreateResponse {
     uid?: string
     is_auto_publish?: boolean
     auto_publish_started?: boolean
+    auto_publish_error?: string
   }
   trace_id?: string
 }

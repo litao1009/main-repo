@@ -164,6 +164,7 @@ func PublishTask(publishURL, sessionMgrURL, accountURL string) gin.HandlerFunc {
 
 type accountInfo struct {
 	AccountID string `json:"account_id"`
+	UID       string `json:"uid"`
 	Platform  string `json:"platform"`
 }
 

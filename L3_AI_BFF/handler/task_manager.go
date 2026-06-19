@@ -118,7 +118,15 @@ func (tm *TaskManager) CreateTask(uid, role string, req model.AutoPublishStartRe
 		chapterNumber = taskInfo.SessionCount
 	}
 
-	accountIDsJSON, _ := json.Marshal(req.Accounts)
+	accounts, err := tm.resolveAccounts(uid, role, platform, req.Accounts)
+	if err != nil {
+		log.Printf("[task_manager] CreateTask: task=%s 解析账号失败: %v", taskID, err)
+		return "", err
+	}
+	accountBindingsJSON, err := json.Marshal(accounts)
+	if err != nil {
+		return "", fmt.Errorf("序列化账号绑定失败: %w", err)
+	}
 
 	now := time.Now()
 	_, err = tm.db.Exec(`
@@ -126,7 +134,7 @@ func (tm *TaskManager) CreateTask(uid, role string, req model.AutoPublishStartRe
 		(task_id, user_id, account_ids, platform, work_id, skill_id, topic, novel_name, volume_name,
 		 chapter_number, status, entry_time, recoverable_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
-	`, taskID, uid, string(accountIDsJSON), platform, "", skillID, topic, novelName,
+	`, taskID, uid, string(accountBindingsJSON), platform, "", skillID, topic, novelName,
 		volumeName, chapterNumber, now, now)
 	if err != nil {
 		log.Printf("[task_manager] CreateTask: task=%s 写入MySQL失败: %v", taskID, err)
@@ -207,9 +215,16 @@ func (tm *TaskManager) tryDispatch() {
 		return
 	}
 
-	tm.db.Exec(`UPDATE auto_publish_task SET status='running' WHERE task_id=?`, t.TaskID)
+	job, err := tm.buildJob(&t)
+	if err != nil {
+		errMsg := err.Error()
+		tm.db.Exec(`UPDATE auto_publish_task SET status='stopped', error_message=? WHERE task_id=?`, errMsg, t.TaskID)
+		tm.removeFromQueueLocked(t.TaskID)
+		log.Printf("[task_manager] task=%s 派遣失败(账号): %v", t.TaskID, err)
+		return
+	}
 
-	job := tm.buildJob(&t)
+	tm.db.Exec(`UPDATE auto_publish_task SET status='running' WHERE task_id=?`, t.TaskID)
 	tm.runningTasks[t.TaskID] = job
 	tm.removeFromQueueLocked(t.TaskID)
 
@@ -218,17 +233,13 @@ func (tm *TaskManager) tryDispatch() {
 	go tm.autoPublishLoopWrapped(job)
 }
 
-func (tm *TaskManager) buildJob(t *autoPublishTaskRow) *AutoPublishJob {
+func (tm *TaskManager) buildJob(t *autoPublishTaskRow) (*AutoPublishJob, error) {
 	stopCtx, stopCancel := context.WithCancel(context.Background())
 
-	var accountIDs []string
-	if t.AccountIDs != "" {
-		json.Unmarshal([]byte(t.AccountIDs), &accountIDs)
-	}
-
-	accounts, err := tm.resolveAccounts(t.UserID, "", t.Platform, accountIDs)
+	accounts, err := loadStoredAccountBindings(t.AccountIDs, t.UserID, t.Platform, tm.resolveAccounts)
 	if err != nil {
-		log.Printf("[task_manager] buildJob: task=%s 解析账号失败: %v", t.TaskID, err)
+		log.Printf("[task_manager] buildJob: task=%s 加载账号绑定失败: %v", t.TaskID, err)
+		return nil, err
 	}
 
 	job := &AutoPublishJob{
@@ -263,7 +274,7 @@ func (tm *TaskManager) buildJob(t *autoPublishTaskRow) *AutoPublishJob {
 		j.mu.Unlock()
 		tm.db.Exec(`UPDATE auto_publish_task SET chapters_this_batch=? WHERE task_id=?`, count, j.TaskID)
 	}
-	return job
+	return job, nil
 }
 
 func (tm *TaskManager) autoPublishLoopWrapped(job *AutoPublishJob) {
