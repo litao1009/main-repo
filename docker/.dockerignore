@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+
+# Node.js
+Front_design/.next
+Front_design/node_modules
+**/node_modules
+
+# Go build artifacts (will be rebuilt in container)
+**/a1_server
+**/c2_dashboard
+**/ai_provider
+**/novelcover_pure
+**/skill_registry
+**/scheduler
+**/workflow_engine
+**/session_manager
+**/bff-server
+**/L3_AI_BFF
+**/go.sum
+
+# Logs and temp
+*.log
+/tmp/
+**/shadow_output/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.cursor/
+.agents/
+
+# Docker
+docker/
+
+# Misc
+.DS_Store
+*.md
+README.md
+
+# Frontend dev configs that might conflict
+Front_design/.env.local
