@@ -16,6 +16,9 @@ ENV GO_VERSION=1.25.2
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
     | tar -C /usr/local -xz
 
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GOSUMDB=sum.golang.org
+
 # 安装 Node.js 22 LTS
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y -qq nodejs && \
@@ -57,12 +60,18 @@ RUN cd /app/Front_design && \
 # ============================================================
 FROM ubuntu:24.04
 
+ARG DEEPSEEK_API_KEY
+
+RUN echo "DEEPSEEK_API_KEY = ${DEEPSEEK_API_KEY}"
+
 ENV DEBIAN_FRONTEND=noninteractive \
     RUN_USER=root \
     # ---------- 后端端口 ----------
     PORT=8088 \
     # ---------- 前端端口 ----------
     FE_PORT=3000 \
+    # ---------- API_KEY
+    DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY} \
     # ---------- 数据库连接 ----------
     MYSQL_HOST=127.0.0.1 \
     MYSQL_PORT=3306 \
@@ -102,7 +111,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     rm -rf /var/lib/apt/lists/*
 
 # 安装 opencode
-RUN npm install -g @anthropic/opencode
+RUN npm config set registry https://registry.npmmirror.com && \
+    npm install -g opencode-ai
 
 WORKDIR /app
 
@@ -122,7 +132,7 @@ COPY --from=build /app/Front_design/.next           /app/Front_design/.next
 COPY --from=build /app/Front_design/node_modules     /app/Front_design/node_modules
 COPY --from=build /app/Front_design/package.json     /app/Front_design/package.json
 COPY --from=build /app/Front_design/next.config.ts   /app/Front_design/next.config.ts
-COPY --from=build /app/Front_design/.env.local       /app/Front_design/.env.local
+# COPY --from=build /app/Front_design/.env.local       /app/Front_design/.env.local
 COPY --from=build /app/Front_design/public           /app/Front_design/public
 
 # ---------- 复制静态资源 ----------
@@ -135,8 +145,8 @@ COPY --from=build /app/schema_claw_studios.sql   /app/schema_claw_studios.sql
 COPY --from=build /app/migrations                /app/migrations
 
 # ---------- 复制配置文件模板 ----------
-COPY --from=build /app/L1_AI_Provider/config/keys.json      /app/L1_AI_Provider/config/keys.json
-COPY --from=build /app/L1_novel_skill/config.json           /app/L1_novel_skill/config.json
+COPY docker/L1_AI_Provider.keys.json             /app/L1_AI_Provider/config/keys.json
+COPY docker/L1_novel_skill.config.json           /app/L1_novel_skill/config.json
 
 # ---------- 复制启动脚本 ----------
 COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
