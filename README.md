@@ -269,3 +269,30 @@ export GOPROXY=https://goproxy.cn,direct
 | migrations | github.com/mengpingzeng/migrations |
 | frontend | github.com/mengpingzeng/frontend |
 | L1_novel_skill / L1_novel_cover_png / pkg | 本地仓库（内置于本仓库） |
+
+## 构建docker部署镜像
+
+### 【准备】在开发环境中安装docker
+
+TODO
+
+### 构建镜像
+
+- 1.在构建镜像之前准备好以下文件：
+  - docker/L1_AI_Provider.keys.json
+  - docker/L1_novel_skill.config.json
+
+- 2.执行
+  ```
+  python3 build_docker_image.py --api-key=<XXX>
+  ```
+  > 执行以后生成镜像：zwf:<时间戳>
+  
+- 3.【TODO】发布镜像
+
+### 部署镜像
+
+- 1.将`docker/docker-compose.yml`拷贝到部署环境中
+- 2.【TODO】拉取对应的镜像
+- 3.执行`docker compose up`
+
