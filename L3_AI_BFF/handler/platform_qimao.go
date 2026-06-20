@@ -64,6 +64,18 @@ func (p *QimaoPlatform) Run(job *AutoPublishJob) {
 
 			staged = p.phasePrepare(job)
 			if staged == nil {
+				job.retryCount++
+				if job.retryCount > maxRetries {
+					log.Printf("[auto_publish] task=%s phasePrepare连续失败%d次, 退出并重新入队", job.TaskID, maxRetries)
+					p.mgr.cleanupSessions(job)
+					if job.onExitRequeue != nil {
+						job.onExitRequeue(job, fmt.Errorf("phasePrepare连续失败%d次", maxRetries))
+					}
+					return
+				}
+				log.Printf("[auto_publish] task=%s phasePrepare失败(第%d/%d次)(qimao), 1分钟后重试",
+					job.TaskID, job.retryCount, maxRetries)
+				p.mgr.sleepOrStop(job, 1*time.Minute)
 				continue
 			}
 		}
@@ -323,7 +335,6 @@ func (p *QimaoPlatform) phasePrepare(job *AutoPublishJob) *chapterGenState {
 
 	cred, err := p.getCredential(job)
 	if err != nil {
-		job.retryCount++
 		log.Printf("[auto_publish] task=%s 获取凭据失败(qimao): %v", job.TaskID, err)
 		return nil
 	}
@@ -333,7 +344,6 @@ func (p *QimaoPlatform) phasePrepare(job *AutoPublishJob) *chapterGenState {
 
 	platformInfo, pubErr := p.adapter.GetPlatformInfo(job.stopCtx, novelName, cred)
 	if pubErr != nil {
-		job.retryCount++
 		log.Printf("[auto_publish] task=%s get_platform_info失败(qimao): %s (code=%s)", taskID, pubErr.ErrorMessage, pubErr.ErrorCode)
 		return nil
 	}
@@ -342,7 +352,6 @@ func (p *QimaoPlatform) phasePrepare(job *AutoPublishJob) *chapterGenState {
 	if !platformInfo.BookExists || bookID == "" {
 		bookID = p.ensureBookExists(job, cred, novelName)
 		if bookID == "" {
-			job.retryCount++
 			log.Printf("[auto_publish] task=%s 获取book_id失败(qimao)", taskID)
 			return nil
 		}
@@ -356,7 +365,6 @@ func (p *QimaoPlatform) phasePrepare(job *AutoPublishJob) *chapterGenState {
 
 	chapters, chErr := p.adapter.GetChapterList(job.stopCtx, bookID, cred)
 	if chErr != nil {
-		job.retryCount++
 		log.Printf("[auto_publish] task=%s get_chapter_list失败(qimao): %s (code=%s)", taskID, chErr.ErrorMessage, chErr.ErrorCode)
 		return nil
 	}

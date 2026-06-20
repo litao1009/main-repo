@@ -64,6 +64,18 @@ func (p *FanqiePlatform) Run(job *AutoPublishJob) {
 
 			staged = p.phasePrepare(job)
 			if staged == nil {
+				job.retryCount++
+				if job.retryCount > maxRetries {
+					log.Printf("[auto_publish] task=%s phasePrepare连续失败%d次, 退出并重新入队", job.TaskID, maxRetries)
+					p.mgr.cleanupSessions(job)
+					if job.onExitRequeue != nil {
+						job.onExitRequeue(job, fmt.Errorf("phasePrepare连续失败%d次", maxRetries))
+					}
+					return
+				}
+				log.Printf("[auto_publish] task=%s phasePrepare失败(第%d/%d次), 1分钟后重试",
+					job.TaskID, job.retryCount, maxRetries)
+				p.mgr.sleepOrStop(job, 1*time.Minute)
 				continue
 			}
 		}
@@ -401,7 +413,6 @@ func (p *FanqiePlatform) phasePrepare(job *AutoPublishJob) *chapterGenState {
 
 	cred, err := p.getCredential(job)
 	if err != nil {
-		job.retryCount++
 		log.Printf("[auto_publish] task=%s 获取凭据失败: %v", job.TaskID, err)
 		return nil
 	}
@@ -411,7 +422,6 @@ func (p *FanqiePlatform) phasePrepare(job *AutoPublishJob) *chapterGenState {
 
 	platformInfo, pubErr := p.adapter.GetPlatformInfo(job.stopCtx, novelName, cred, job.WorkID)
 	if pubErr != nil {
-		job.retryCount++
 		log.Printf("[auto_publish] task=%s get_platform_info失败: %s (code=%s)", taskID, pubErr.ErrorMessage, pubErr.ErrorCode)
 		return nil
 	}
