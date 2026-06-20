@@ -128,13 +128,15 @@ func (tm *TaskManager) CreateTask(uid, role string, req model.AutoPublishStartRe
 		return "", fmt.Errorf("序列化账号绑定失败: %w", err)
 	}
 
+	taskOwnerUID := taskOwnerUIDFromResolved(uid, accounts)
+
 	now := time.Now()
 	_, err = tm.db.Exec(`
 		INSERT INTO auto_publish_task
 		(task_id, user_id, account_ids, platform, work_id, skill_id, topic, novel_name, volume_name,
 		 chapter_number, status, entry_time, recoverable_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
-	`, taskID, uid, string(accountBindingsJSON), platform, "", skillID, topic, novelName,
+	`, taskID, taskOwnerUID, string(accountBindingsJSON), platform, "", skillID, topic, novelName,
 		volumeName, chapterNumber, now, now)
 	if err != nil {
 		log.Printf("[task_manager] CreateTask: task=%s 写入MySQL失败: %v", taskID, err)
@@ -145,7 +147,7 @@ func (tm *TaskManager) CreateTask(uid, role string, req model.AutoPublishStartRe
 	tm.queue = append(tm.queue, taskID)
 	tm.mu.Unlock()
 
-	log.Printf("[task_manager] task=%s 已入队 user=%s platform=%s", taskID, uid, platform)
+	log.Printf("[task_manager] task=%s 已入队 user=%s platform=%s", taskID, taskOwnerUID, platform)
 
 	go tm.tryDispatch()
 

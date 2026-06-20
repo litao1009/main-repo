@@ -36,6 +36,7 @@ func Setup(cfg *config.Config, autoPubMgr *handler.AutoPublishManager, taskMgr *
 		taskGroup := api.Group("/task")
 		{
 			taskGroup.POST("/create", handler.CreateTask(cfg.SessionMgrURL, autoPubMgr, taskMgr))
+			taskGroup.GET("/check-account-occupancy", handler.CheckAccountOccupancy(cfg.SessionMgrURL, taskMgr))
 			taskGroup.GET("/list", handler.ListTask(formatURL(cfg.SessionMgrURL, "/api/task/list"), autoPubMgr, cfg.C2DashboardURL, taskMgr))
 			taskGroup.POST("/alloc_skill", handler.AllocSkill(cfg.SkillRegistryURL, cfg.SessionMgrURL))
 			taskGroup.POST("/alloc_skill/release", handler.ReleaseSkill(cfg.SkillRegistryURL))

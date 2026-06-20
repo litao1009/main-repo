@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/claw-studio/L3_AI_BFF/middleware"
 	"github.com/claw-studio/L3_AI_BFF/model"
@@ -59,7 +61,7 @@ func PublishTask(publishURL, sessionMgrURL, accountURL string) gin.HandlerFunc {
 			if bffRole == "admin" {
 				uidForLookup = ""
 			}
-			allUserAccounts := fetchUserAccounts(accountURL, uidForLookup, platform)
+			allUserAccounts := fetchUserAccounts(accountURL, uidForLookup, platform, bffUID.(string), bffRole.(string))
 			userAccountSet := make(map[string]string)
 			for _, a := range allUserAccounts {
 				userAccountSet[a.AccountID] = a.Platform
@@ -91,7 +93,7 @@ func PublishTask(publishURL, sessionMgrURL, accountURL string) gin.HandlerFunc {
 			if bffRole == "admin" {
 				uidForLookup = ""
 			}
-			realAccounts := fetchUserAccounts(accountURL, uidForLookup, platform)
+			realAccounts := fetchUserAccounts(accountURL, uidForLookup, platform, bffUID.(string), bffRole.(string))
 			if logger != nil {
 				logger.Info("查询用户账号 uid=%q platform=%q 结果数=%d", uidForLookup, platform, len(realAccounts))
 			}
@@ -168,21 +170,46 @@ type accountInfo struct {
 	Platform  string `json:"platform"`
 }
 
-func fetchUserAccounts(accountURL, uid, platform string) []accountInfo {
-	url := fmt.Sprintf("%s/api/account/list?uid=%s", accountURL, uid)
-	if platform != "" {
-		url += "&platform=" + platform
+// fetchUserAccounts 查询 A1 账号列表。admin 查全量时需传 operatorUID+role，与 AccountProxy 行为一致。
+func fetchUserAccounts(accountURL, lookupUID, platform, operatorUID, role string) []accountInfo {
+	listURL := strings.TrimSuffix(accountURL, "/") + "/api/account/list"
+	query := url.Values{}
+	if lookupUID != "" {
+		query.Set("uid", lookupUID)
 	}
-	req, err := http.NewRequest("GET", url, nil)
+	if platform != "" {
+		query.Set("platform", platform)
+	}
+	if role == "admin" && lookupUID == "" {
+		query.Set("limit", "100")
+	}
+	if encoded := query.Encode(); encoded != "" {
+		listURL += "?" + encoded
+	}
+
+	req, err := http.NewRequest(http.MethodGet, listURL, nil)
 	if err != nil {
 		return nil
 	}
-	req.Header.Set("X-User-ID", uid)
+	headerUID := lookupUID
+	if headerUID == "" {
+		headerUID = operatorUID
+	}
+	if headerUID != "" {
+		req.Header.Set("X-User-ID", headerUID)
+	}
+	if role != "" {
+		req.Header.Set("X-User-Role", role)
+	}
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
 	var result struct {
 		Accounts []accountInfo `json:"accounts"`
 	}

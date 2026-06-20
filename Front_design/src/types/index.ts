@@ -174,6 +174,14 @@ export interface TaskListResponse {
   total?: number
 }
 
+/** GET /api/task/check-account-occupancy */
+export interface AccountOccupancyResult {
+  occupied: boolean
+  task_id?: string
+  novel_name?: string
+  message?: string
+}
+
 // ===== 模型 & Skill =====
 export interface Model {
   id: string

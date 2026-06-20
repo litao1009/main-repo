@@ -45,6 +45,22 @@ func CreateTask(sessionMgrURL string, autoPubMgr *AutoPublishManager, taskMgr *T
 		taskID := idgen.NewTaskID()
 		uid, _ := c.Get("uid")
 		role, _ := c.Get("role")
+		operatorUID := uid.(string)
+		roleStr, _ := role.(string)
+
+		taskOwnerUID := operatorUID
+		if len(req.AccountIDs) > 0 {
+			var resolveErr error
+			if taskMgr != nil {
+				taskOwnerUID, _, resolveErr = taskMgr.resolveTaskOwnerUID(operatorUID, roleStr, req.Platform, req.AccountIDs)
+			} else if autoPubMgr != nil {
+				taskOwnerUID, _, resolveErr = autoPubMgr.resolveTaskOwnerUID(operatorUID, roleStr, req.Platform, req.AccountIDs)
+			}
+			if resolveErr != nil && req.IsAutoPublish {
+				model.Error(c, model.ErrInvalidParam.WithDetail(resolveErr.Error()))
+				return
+			}
+		}
 
 		body := map[string]interface{}{
 			"task_id":    taskID,
@@ -52,7 +68,7 @@ func CreateTask(sessionMgrURL string, autoPubMgr *AutoPublishManager, taskMgr *T
 			"platform":   req.Platform,
 			"skill_id":   req.SkillID,
 			"model":      req.Model,
-			"uid":        uid,
+			"uid":        taskOwnerUID,
 			"novel_name": req.NovelName,
 		}
 		if len(req.AccountIDs) > 0 {
@@ -84,14 +100,14 @@ func CreateTask(sessionMgrURL string, autoPubMgr *AutoPublishManager, taskMgr *T
 				NovelName: req.NovelName,
 			}
 			if taskMgr != nil {
-				if _, err := taskMgr.CreateTask(uid.(string), role.(string), autoReq); err != nil {
+				if _, err := taskMgr.CreateTask(operatorUID, roleStr, autoReq); err != nil {
 					log.Printf("[create_task] task=%s 入队失败: %v", taskID, err)
 					autoPublishError = err.Error()
 				} else {
 					autoPublishStarted = true
 				}
 			} else if autoPubMgr != nil {
-				if err := autoPubMgr.StartAutoPublishInternal(uid.(string), role.(string), autoReq); err != nil {
+				if err := autoPubMgr.StartAutoPublishInternal(operatorUID, roleStr, autoReq); err != nil {
 					log.Printf("[create_task] task=%s 自动发布启动失败: %v", taskID, err)
 					autoPublishError = err.Error()
 				} else {
@@ -103,7 +119,7 @@ func CreateTask(sessionMgrURL string, autoPubMgr *AutoPublishManager, taskMgr *T
 		resp := gin.H{
 			"task_id":              taskID,
 			"trace_id":             tid,
-			"uid":                  uid,
+			"uid":                  taskOwnerUID,
 			"is_auto_publish":      req.IsAutoPublish,
 			"auto_publish_started": autoPublishStarted,
 		}

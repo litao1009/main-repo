@@ -210,10 +210,12 @@ func (m *AutoPublishManager) StartAutoPublishInternal(uid, role string, req mode
 		chapterNumber = taskInfo.SessionCount
 	}
 
+	taskOwnerUID := taskOwnerUIDFromResolved(uid, accounts)
+
 	stopCtx, stopCancel := context.WithCancel(context.Background())
 	job := &AutoPublishJob{
 		TaskID:        req.TaskID,
-		UserID:        uid,
+		UserID:        taskOwnerUID,
 		Platform:      platform,
 		Accounts:      accounts,
 		SkillID:       skillID,
@@ -246,7 +248,7 @@ func (m *AutoPublishManager) resolveAccounts(uid, role, platform string, account
 		if role == "admin" {
 			uidForLookup = ""
 		}
-		allUserAccounts := fetchUserAccounts(m.accountURL, uidForLookup, platform)
+		allUserAccounts := fetchUserAccounts(m.accountURL, uidForLookup, platform, uid, role)
 		accountByID := make(map[string]accountInfo, len(allUserAccounts))
 		for _, a := range allUserAccounts {
 			accountByID[a.AccountID] = a
@@ -283,7 +285,7 @@ func (m *AutoPublishManager) resolveAccounts(uid, role, platform string, account
 		if role == "admin" {
 			uidForLookup = ""
 		}
-		realAccounts := fetchUserAccounts(m.accountURL, uidForLookup, platform)
+		realAccounts := fetchUserAccounts(m.accountURL, uidForLookup, platform, uid, role)
 		if len(realAccounts) == 0 {
 			return nil, fmt.Errorf("没有绑定 %s 平台的账号", platform)
 		}
@@ -308,6 +310,28 @@ func (m *AutoPublishManager) resolveAccounts(uid, role, platform string, account
 		}
 	}
 	return accounts, nil
+}
+
+// taskOwnerUIDFromResolved 从已解析的账号绑定中取任务归属用户（账号主人）；无绑定时为操作者本人。
+func taskOwnerUIDFromResolved(operatorUID string, accounts []map[string]string) string {
+	if len(accounts) > 0 {
+		if u := accounts[0]["uid"]; u != "" {
+			return u
+		}
+	}
+	return operatorUID
+}
+
+// resolveTaskOwnerUID 解析账号并返回任务应归属的用户 ID（admin 代发时为账号主人）。
+func (m *AutoPublishManager) resolveTaskOwnerUID(operatorUID, role, platform string, accountIDs []string) (string, []map[string]string, error) {
+	if len(accountIDs) == 0 {
+		return operatorUID, nil, nil
+	}
+	accounts, err := m.resolveAccounts(operatorUID, role, platform, accountIDs)
+	if err != nil {
+		return operatorUID, nil, err
+	}
+	return taskOwnerUIDFromResolved(operatorUID, accounts), accounts, nil
 }
 
 // loadStoredAccountBindings 读取入队时持久化的账号绑定；兼容旧版纯 account_id 数组。

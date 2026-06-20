@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Textarea } from "@/components/ui/input"
-import { fetchModels, fetchAccounts, createTask, createSession, allocSkill } from "@/lib/api"
+import { fetchModels, fetchAccounts, createTask, createSession, allocSkill, checkAccountOccupancy } from "@/lib/api"
 import { filterPublishableAccounts } from "@/lib/account-health"
 import type { Model, AccountSummary, AllocSkillItem } from "@/types"
 import { Loader2 } from "lucide-react"
@@ -301,6 +301,17 @@ export default function NewTaskPage() {
     setConfirmOpen(false)
     setSubmitting(true)
     try {
+      if (platform === "fanqie") {
+        const occupancy = await checkAccountOccupancy(platform, selectedAccountId)
+        if (occupancy.occupied) {
+          toast.error(
+            occupancy.message
+              || `番茄账号已绑定小说「${occupancy.novel_name || "未命名小说"}」，番茄平台每个账号仅支持创建一本小说`,
+          )
+          return
+        }
+      }
+
       const prompt = isAuto ? (topic.trim() || "全自动创作") : buildPrompt(selectedTags, topic)
       const taskResp = await createTask({
         platform,

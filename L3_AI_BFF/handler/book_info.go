@@ -163,13 +163,12 @@ func buildVolumeTree(sessions []bookChapterRaw) []bookVolume {
 	volOrder := make([]string, 0)
 	seen := make(map[string]bool)
 
-	chapters := make([]bookChapter, 0, len(sessions))
 	for _, s := range sessions {
 		phase := "draft"
 		if s.PostID != "" {
 			phase = "published"
 		}
-		chapters = append(chapters, bookChapter{
+		ch := bookChapter{
 			ChapterNumber: s.ChapterNumber,
 			SessionID:     s.SessionID,
 			Title:         strings.TrimSpace(s.ChapterTitle),
@@ -179,22 +178,19 @@ func buildVolumeTree(sessions []bookChapterRaw) []bookVolume {
 			Published:     phase == "published",
 			CreatedAt:     s.CreatedAt,
 			ArchivedAt:    s.ArchivedAt,
-		})
-	}
-	sort.Slice(chapters, func(i, j int) bool {
-		return chapters[i].DraftVersion < chapters[j].DraftVersion
-	})
-
-	for i, s := range sessions {
-		volName := s.VolumeName
-		if volName == "" {
-			volName = ""
 		}
+		volName := s.VolumeName
 		if !seen[volName] {
 			seen[volName] = true
 			volOrder = append(volOrder, volName)
 		}
-		volMap[volName] = append(volMap[volName], chapters[i])
+		volMap[volName] = append(volMap[volName], ch)
+	}
+
+	for vn := range volMap {
+		sort.Slice(volMap[vn], func(i, j int) bool {
+			return volMap[vn][i].ChapterNumber < volMap[vn][j].ChapterNumber
+		})
 	}
 
 	sort.Slice(volOrder, func(i, j int) bool {
@@ -237,7 +233,7 @@ func mergeUnclassified(volumes []bookVolume) []bookVolume {
 			classified[i].Chapters = append(unclassified, classified[i].Chapters...)
 			classified[i].ChapterCount = len(classified[i].Chapters)
 			sort.Slice(classified[i].Chapters, func(a, b int) bool {
-				return classified[i].Chapters[a].DraftVersion < classified[i].Chapters[b].DraftVersion
+				return classified[i].Chapters[a].ChapterNumber < classified[i].Chapters[b].ChapterNumber
 			})
 			return classified
 		}

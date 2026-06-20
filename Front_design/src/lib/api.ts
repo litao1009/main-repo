@@ -42,6 +42,7 @@ import type {
   PublishRecord,
   AutoPublishTaskStatusData,
   AutoPublishQueueResponse,
+  AccountOccupancyResult,
 } from "@/types"
 
 import { apiUrl } from "./origin"
@@ -172,6 +173,16 @@ export async function fetchAccountCredential(accountId: string): Promise<Account
 
 export async function createTask(input: TaskCreateInput): Promise<TaskCreateResponse> {
   return post<TaskCreateResponse>("/api/task/create", input)
+}
+
+/** 检查发布账号是否已有进行中的小说任务（番茄：按 account_id 全局查询） */
+export async function checkAccountOccupancy(
+  platform: string,
+  accountId: string,
+): Promise<AccountOccupancyResult> {
+  const params = new URLSearchParams({ platform, account_id: accountId })
+  const resp = await get<unknown>(`/api/task/check-account-occupancy?${params.toString()}`)
+  return unwrapBffData<AccountOccupancyResult>(resp)
 }
 
 export async function fetchTasks(page = 1, size = 12, q = ""): Promise<{ tasks: TaskSummary[]; total: number }> {
